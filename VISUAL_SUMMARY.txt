@@ -8,16 +8,18 @@
 🚀 QUICK START
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. Open browser and go to:
-   file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+1. Start the dev server:
+   npm run dev
 
-2. Load "clawed_code.mycelial" from examples
+2. Open http://localhost:3000 in your browser
 
-3. Click "✓ Parse" - network validates
+3. Load "clawed_code.mycelial" from examples
 
-4. Click "⏭ Step" or "▶ Play" - watch execution
+4. Click "✓ Parse" - network validates
 
-5. Click on agents to inspect their state
+5. Click "⏭ Step" or "▶ Play" - watch execution
+
+6. Click on agents to inspect their state
 
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -434,8 +436,8 @@ Deep dive:
 ═══════════════════════════════════════════════════════════════════════════════
 
 Option 1 - Immediate (1 minute)
-    1. Open browser
-    2. Paste this: file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+    1. Run: npm run dev
+    2. Open: http://localhost:3000
     3. Load clawed_code.mycelial
     4. Click Parse → Step
 
@@ -496,7 +498,8 @@ Option 3 - Complete (30+ minutes)
 
                     READY FOR EXPLORATION 🌿🧬
 
-         Open this in your browser and start testing:
-    file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+         Start the dev server and open in your browser:
+                        npm run dev
+                  http://localhost:3000
 
 ═══════════════════════════════════════════════════════════════════════════════

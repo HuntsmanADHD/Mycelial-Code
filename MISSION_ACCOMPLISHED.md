@@ -143,9 +143,10 @@ OVERALL: ✅ 100% PASS RATE
 
 ## How to Use It Right Now
 
-### Step 1: Open in Browser (30 seconds)
-```
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+### Step 1: Start the Dev Server
+```bash
+npm run dev
+# Then open http://localhost:3000
 ```
 
 ### Step 2: Load ClawedCode
@@ -221,7 +222,7 @@ file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
 ## Project Files Location
 
 ```
-/home/lewey/Desktop/MyLanguage/
+Mycelial-Code/
 
 ├── 📄 README.md ← Start here (project overview)
 ├── 📄 START_HERE.md ← Navigation hub
@@ -314,15 +315,15 @@ file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
 
 ### CLI Syntax Validation
 ```bash
-cd /home/lewey/Desktop/MyLanguage/05-TOOLS/simulator
-node verify-syntax.js
+npm run verify
 ```
 
 **Result:** All 6 programs pass ✅
 
 ### Open in Browser
-```
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+```bash
+npm run dev
+# Then open http://localhost:3000
 ```
 
 **Then:**
@@ -435,13 +436,13 @@ You now have a **complete, tested, production-ready bio-inspired distributed pro
 
 | What | Where |
 |------|-------|
-| Open simulator | `/05-TOOLS/simulator/index.html` |
-| Run tests | `node /05-TOOLS/simulator/verify-syntax.js` |
-| Read docs | `/README.md` or `/START_HERE.md` |
-| View examples | `/05-TOOLS/simulator/examples/` |
-| Study code | `/05-TOOLS/simulator/src/` |
-| Full specification | `/01-SPECIFICATION/` |
-| Understand vision | `/00-VISION/` |
+| Open simulator | `npm run dev` → http://localhost:3000 |
+| Run tests | `npm run verify` |
+| Read docs | `README.md` or `START_HERE.md` |
+| View examples | `05-TOOLS/simulator/examples/` |
+| Study code | `05-TOOLS/simulator/src/` |
+| Full specification | `01-SPECIFICATION/` |
+| Understand vision | `00-VISION/` |
 
 ---
 
@@ -461,7 +462,7 @@ You asked to "test it. with a new input: ClawedCode"
 ## Ready to Begin?
 
 ### Fast Track (5 min)
-👉 Open: `file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html`
+👉 Run: `npm run dev` then open http://localhost:3000
 
 ### Guided Tour (30 min)
 👉 Read: [QUICK_START.md](QUICK_START.md)

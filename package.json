@@ -1,0 +1,18 @@
+{
+  "name": "mycelial-lang",
+  "version": "1.0.0",
+  "description": "Bio-inspired distributed programming language with web-based IDE and simulator",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "verify": "node 05-TOOLS/simulator/verify-syntax.js"
+  },
+  "keywords": [
+    "programming-language",
+    "distributed-systems",
+    "bio-inspired",
+    "simulator"
+  ],
+  "license": "MIT"
+}

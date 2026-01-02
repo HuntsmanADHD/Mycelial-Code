@@ -20,11 +20,13 @@ Mycelial is a **programming language** that treats computation like a **living f
 
 ## Quick Start
 
-### 1. Open the Simulator (30 seconds)
+### 1. Start the Dev Server
 
+```bash
+npm run dev
 ```
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
-```
+
+Then open http://localhost:3000 in your browser.
 
 ### 2. Load an Example
 
