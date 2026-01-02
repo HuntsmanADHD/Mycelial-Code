@@ -1,0 +1,206 @@
+================================================================================
+MYCELIAL COMPILER - QUICK STATUS & CHECKPOINT REFERENCE
+================================================================================
+
+CURRENT DATE: 2026-01-01
+OVERALL PROGRESS: 60% (18/30 M0 tasks complete)
+CURRENT PHASE: M0 - Foundation & Design (Week 1-3)
+
+================================================================================
+WHERE ARE WE?
+================================================================================
+
+✅ COMPLETE (5 tasks)
+  0.1 - Project setup and structure
+  1.1 - Compiler-as-agents architecture design
+  1.2 - x86-64 code generation strategy (1600+ lines!)
+  1.3 - Hand-coded assembly validation (hello-x86-64 tested & working)
+  Organizational infrastructure (OPERATIONS.md, PROGRESS_TRACKER.md)
+
+🔄 IN PROGRESS (3 tasks)
+  2.1 - x86-64 instructions KB (Opus) - ~50% done
+  2.2 - System V ABI KB (Opus) - ~50% done
+  2.3 - ELF64 format KB (Opus) - ~50% done
+  3.1 - IR specification (Sonnet) - ~40% done
+
+⏳ PENDING (4 tasks)
+  2.4 - ARM64 AAPCS64 KB (Opus - after ARM64 design)
+  2.5 - Microsoft x64 ABI KB (Opus - lower priority)
+  4.1 - ARM64 code generation strategy (Opus)
+  5.x - Final M0 alignment review (all)
+
+================================================================================
+WHAT'S EACH PERSON DOING RIGHT NOW?
+================================================================================
+
+OPUS:
+  NOW: Extract x86-64 instruction reference from x86-64-codegen.md
+       → /docs/knowledge-base/x86-64-instructions.md (2.1)
+       → /docs/knowledge-base/system-v-abi.md (2.2)
+       → /docs/knowledge-base/elf-format.md (2.3)
+  THEN: Write ARM64 code generation strategy (4.1)
+
+SONNET:
+  NOW: Design IR specification incorporating x86-64 patterns
+       → /docs/architecture/ir-specification.md (3.1)
+  WHEN OPUS KB DOCS DONE: Incorporate instruction selection patterns, finalize
+
+HAIKU:
+  NOW: Monitor progress, prepare to review documents as they complete
+  THEN: Review KB docs for quality (5.1)
+  THEN: Review ARM64 strategy (4.3)
+  THEN: Coordinate final team alignment (5.2)
+
+================================================================================
+WHAT'S THE NEXT CHECKPOINT?
+================================================================================
+
+OPUS:  Complete checkpoint 2.1.5 (x86-64 instructions KB complete)
+       Then move to 2.2.1 (System V ABI KB)
+       See: PROGRESS_TRACKER.md lines 133-160
+
+SONNET: Complete checkpoint 3.1.11 (IR spec with all examples)
+        Then wait for Opus KB docs before finalizing
+        See: PROGRESS_TRACKER.md lines 187-217
+
+HAIKU: Checkpoint 5.1.1 (Review KB docs as they arrive)
+       See: PROGRESS_TRACKER.md lines 319-328
+
+================================================================================
+WHERE TO FIND EVERYTHING
+================================================================================
+
+Quick Start:
+  README.md - Navigate to Quick Navigation section
+
+Organizational:
+  PROGRESS_TRACKER.md - Numerical checkpoint system (THIS IS YOUR BIBLE)
+  OPERATIONS.md - Management, quality gates, review criteria
+  QUICK_STATUS.txt - This file
+
+Architecture:
+  docs/architecture/compiler-as-agents.md ✅ COMPLETE
+  docs/architecture/x86-64-codegen.md ✅ COMPLETE
+  docs/architecture/ir-specification.md 🔄 IN PROGRESS
+  docs/architecture/arm64-codegen.md ⏳ PENDING
+
+Knowledge Base:
+  docs/knowledge-base/x86-64-instructions.md 🔄 IN PROGRESS
+  docs/knowledge-base/system-v-abi.md 🔄 IN PROGRESS
+  docs/knowledge-base/elf-format.md 🔄 IN PROGRESS
+  docs/knowledge-base/arm64-aapcs.md ⏳ PENDING
+  docs/knowledge-base/microsoft-x64-abi.md ⏳ PENDING
+
+Validation:
+  examples/hand-coded/hello-x86-64.asm ✅ TESTED
+  examples/hand-coded/hello-arm64.asm ✅ CREATED
+
+Tests:
+  tests/hello_world.mycelial (for M1)
+  tests/pipeline.mycelial
+  tests/map_reduce.mycelial
+  tests/distributed_search.mycelial
+  tests/consensus.mycelial
+  tests/clawed_code.mycelial
+
+Implementation:
+  compiler/ - Empty, ready for mycelial-compiler.mycelial (M1)
+  runtime/ - Empty, ready for C signal runtime (M1)
+  artifacts/{gen0,gen1,gen2,benchmarks}/ - Empty, ready for builds
+
+================================================================================
+TIMELINE
+================================================================================
+
+TODAY (2026-01-01):
+  Opus: Continue KB doc extraction
+  Sonnet: Continue IR specification
+  Haiku: Monitor, prepare reviews
+
+THIS WEEK (by 2026-01-03):
+  Opus: Complete all 3 KB docs (2.1-2.3) ✅
+  Sonnet: Complete IR spec (3.1) with reasonable x86-64 assumptions
+  Haiku: Begin reviewing KB docs as they're completed
+
+NEXT WEEK (by 2026-01-10):
+  Opus: Complete ARM64 code generation strategy (4.1)
+  Haiku: Complete all document reviews
+  Team: Final alignment review (5.2)
+
+WEEK 3 (by 2026-01-17):
+  M0 COMPLETE ✅
+  All architecture documented
+  All knowledge base documented
+  All team members aligned
+  READY FOR M1 KICKOFF
+
+================================================================================
+IF YOU'RE JUMPING IN MID-STREAM
+================================================================================
+
+SITUATION 1: You're Opus, resuming where you left off
+  → Open PROGRESS_TRACKER.md, find "### 2.1 - x86-64 Instruction Reference"
+  → You're at checkpoint 2.1.1 or beyond
+  → Follow checklist through 2.1.5
+  → When complete, move to 2.2.1
+  → Reference x86-64-codegen.md for content to extract
+
+SITUATION 2: You're Sonnet, resuming where you left off
+  → Open PROGRESS_TRACKER.md, find "### 3.1 - IR Specification"
+  → You're at checkpoint 3.1.x
+  → Continue designing IR per specification
+  → When Opus finishes KB docs, incorporate instruction patterns
+  → See SONNET_IR_BRIEFING.md for full context
+
+SITUATION 3: You're Haiku, resuming where you left off
+  → Open PROGRESS_TRACKER.md, find "### 5.1 - Knowledge Base Quality Review"
+  → Wait for Opus KB docs, then begin 5.1.1
+  → Review each doc using criteria in OPERATIONS.md
+  → Flag issues, coordinate resolution
+  → Prepare team alignment (5.2)
+
+SITUATION 4: You don't know who you are
+  → Read COMPILER_TEAM_MANIFEST.json to see your role
+  → Read PROGRESS_TRACKER.md to understand the full picture
+  → Find your section in the "WHAT'S EACH PERSON DOING" section above
+
+================================================================================
+CONTACT & ESCALATION
+================================================================================
+
+If blocked:
+  1. Check PROGRESS_TRACKER.md for clarification
+  2. Check OPERATIONS.md for quality criteria
+  3. Check specific briefing document (SONNET_IR_BRIEFING.md, etc.)
+  4. Ask Haiku for coordination help
+
+If confused about what's next:
+  1. Find your checkpoint in PROGRESS_TRACKER.md
+  2. Read the next numbered item (e.g., if at 2.1.3, read 2.1.4)
+  3. That's what to do next
+
+If you see something blocking other people:
+  → Tell Haiku immediately (flag at current checkpoint)
+
+================================================================================
+SUCCESS LOOKS LIKE
+================================================================================
+
+By end of Week 3:
+  ✅ All 3 x86-64 KB docs extracted and reviewed
+  ✅ IR spec complete and validated against x86-64
+  ✅ ARM64 strategy complete and consistent with x86-64
+  ✅ All documents reviewed for quality
+  ✅ Team aligned on all design decisions
+  ✅ No blockers between team members
+  ✅ Ready to write agents in mycelial-compiler.mycelial (M1)
+
+When it's perfect:
+  - Someone can pick up the docs and implement immediately
+  - All pieces fit together without friction
+  - Architecture is clear, implementable, beautiful
+
+================================================================================
+LAST UPDATED: 2026-01-01 by Haiku
+NEXT REVIEW: After Opus completes KB doc extraction
+================================================================================

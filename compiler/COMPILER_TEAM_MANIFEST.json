@@ -1,0 +1,322 @@
+{
+  "project": {
+    "name": "Mycelial Native Compiler - Direct Machine Code",
+    "version": "1.0.0",
+    "created": "2026-01-01",
+    "philosophy": "Build something genuinely beautiful. No compromises. Direct to machine code. Pure self-hosting.",
+    "status": "PLANNING_PHASE"
+  },
+
+  "vision": {
+    "headline": "A compiler written IN Mycelial that compiles itself to native machine code, proving the language is powerful enough for real systems programming.",
+    "principles": [
+      "No dependencies on C/GCC/LLVM - we build our own",
+      "Agent-based architecture throughout (compiler as network of hyphae)",
+      "Direct x86-64 and ARM64 code generation",
+      "Self-hosting bootstrap (compiler compiles itself)",
+      "Beautiful, emergent, bio-inspired design",
+      "Platform support: Linux, macOS, Windows"
+    ],
+    "success_criteria": "mycelial-compiler.mycelial compiles itself to binary that produces identical output (fixed point verified)"
+  },
+
+  "team_structure": {
+    "lead_architect": "Haiku (User's primary Claude)",
+    "roles": {
+      "Haiku": {
+        "name": "Claude Haiku 4.5",
+        "role": "Lead Architect & Implementation Coordinator",
+        "responsibilities": [
+          "Overall architecture design",
+          "Plan coordination between Opus/Sonnet",
+          "Implementation of M1 (bootstrap compiler in C initially for speed)",
+          "Integration and testing",
+          "Day-to-day decision making"
+        ],
+        "timezone": "Primary"
+      },
+      "Opus": {
+        "name": "Claude Opus 4.5",
+        "role": "Deep Systems Architect",
+        "responsibilities": [
+          "Machine code generation algorithms (x86-64, ARM64)",
+          "CPU instruction set expertise",
+          "Register allocation strategies",
+          "Calling conventions and ABI design",
+          "Optimization framework design",
+          "Complex problem-solving and design review"
+        ],
+        "expertise": "Systems programming, compilers, CPU architectures"
+      },
+      "Sonnet": {
+        "name": "Claude Sonnet 4",
+        "role": "Language & Parser Specialist",
+        "responsibilities": [
+          "Mycelial grammar refinement",
+          "Parser and AST design for compiler implementation",
+          "Type system formalization",
+          "Code generation patterns for agent-based paradigm",
+          "Documentation and specification"
+        ],
+        "expertise": "Language design, formal grammars, type systems"
+      }
+    }
+  },
+
+  "technical_approach": {
+    "target_architectures": [
+      {
+        "name": "x86-64",
+        "platform": "Linux, Windows, macOS (Intel)",
+        "priority": 1,
+        "complexity": "Medium"
+      },
+      {
+        "name": "ARM64",
+        "platform": "macOS (Apple Silicon), Linux ARM",
+        "priority": 2,
+        "complexity": "Medium"
+      },
+      {
+        "name": "RISC-V",
+        "platform": "Future, open-source CPUs",
+        "priority": 3,
+        "complexity": "Medium"
+      }
+    ],
+
+    "compilation_pipeline": {
+      "stage_1_frontend": {
+        "lexer": "Tokenize Mycelial source",
+        "parser": "Parse into AST (agent-aware)",
+        "type_checker": "Type validation and inference",
+        "owner": "Sonnet (with Haiku implementation)"
+      },
+      "stage_2_ir": {
+        "ir_design": "Custom IR (not LLVM, not C-like)",
+        "ir_generator": "Lower typed AST to IR",
+        "ir_optimizer": "Optimize IR using agent patterns",
+        "owner": "Opus (design) + Haiku (implementation)"
+      },
+      "stage_3_backend": {
+        "code_selector": "IR → Machine code patterns",
+        "register_allocator": "Assign CPU registers optimally",
+        "assembler": "Generate native assembly/object files",
+        "linker": "Create final executable",
+        "owner": "Opus (design) + Haiku (implementation)"
+      }
+    }
+  },
+
+  "milestones": {
+    "M0_planning": {
+      "duration_weeks": 2,
+      "deliverable": "Complete architecture design + knowledge base",
+      "tasks": [
+        "Opus designs machine code generation strategy",
+        "Sonnet refines language for compiler implementation",
+        "Haiku creates implementation plan",
+        "Create knowledge base for x86-64 and ARM64"
+      ]
+    },
+    "M1_bootstrap_compiler": {
+      "duration_weeks": 6,
+      "deliverable": "C-based bootstrap compiler (for speed only)",
+      "note": "TEMPORARY. Used only to bootstrap M2. Will be replaced.",
+      "rationale": "Building full machine code gen from scratch takes time. Use C compiler as fast bootstrap path.",
+      "tasks": [
+        "Port lexer/parser to C",
+        "Basic code generator (C output)",
+        "Minimal runtime library",
+        "Test on hello_world.mycelial"
+      ],
+      "owner": "Haiku + Opus consultation"
+    },
+    "M1_extended": {
+      "duration_weeks": 4,
+      "deliverable": "Bootstrap compiler handles all 6 examples",
+      "tasks": [
+        "Type checking in C compiler",
+        "Full language support",
+        "Test all 6 programs"
+      ],
+      "owner": "Haiku"
+    },
+    "M2_real_compiler_design": {
+      "duration_weeks": 4,
+      "deliverable": "Complete machine code generation design",
+      "tasks": [
+        "Opus: x86-64 code generation strategy",
+        "Opus: ARM64 code generation strategy",
+        "Opus: Register allocation algorithm",
+        "Opus: Calling conventions and ABI",
+        "Haiku: Integration plan"
+      ],
+      "owner": "Opus (design) + Haiku (coordination)"
+    },
+    "M3_ir_design": {
+      "duration_weeks": 3,
+      "deliverable": "Mycelial IR specification",
+      "tasks": [
+        "Define IR node types",
+        "Design IR for agent-based thinking",
+        "Create IR generator (from typed AST)",
+        "Create IR optimizer"
+      ],
+      "owner": "Sonnet (spec) + Opus (optimization) + Haiku (impl)"
+    },
+    "M4_code_generator": {
+      "duration_weeks": 8,
+      "deliverable": "Direct machine code generator",
+      "tasks": [
+        "Implement x86-64 code generator",
+        "Implement ARM64 code generator",
+        "Register allocator",
+        "Assembler/object file generator",
+        "Linker integration"
+      ],
+      "owner": "Opus (algorithms) + Haiku (implementation)"
+    },
+    "M5_compiler_in_mycelial": {
+      "duration_weeks": 8,
+      "deliverable": "mycelial-compiler.mycelial (complete)",
+      "tasks": [
+        "Rewrite M1 bootstrap compiler AS AGENTS in Mycelial",
+        "Test with interpreter",
+        "Verify output matches"
+      ],
+      "owner": "Haiku + Sonnet (language design)"
+    },
+    "M6_bootstrap": {
+      "duration_weeks": 4,
+      "deliverable": "Self-hosting compiler",
+      "tasks": [
+        "M1 compiles M2 → native binary",
+        "M2 compiles M2 → fixed point",
+        "Verification and testing",
+        "Retire M1, adopt M2 as official compiler"
+      ],
+      "owner": "Haiku (coordination)"
+    },
+    "M7_optimization": {
+      "duration_weeks": 4,
+      "deliverable": "Performance 100x+ faster than interpreter",
+      "tasks": [
+        "Profile compiled programs",
+        "Optimize hot paths",
+        "Memory pooling for signals",
+        "Benchmark against interpreter"
+      ],
+      "owner": "Opus (strategies) + Haiku (implementation)"
+    }
+  },
+
+  "knowledge_requirements": {
+    "cpu_architecture": {
+      "x86-64": [
+        "x86-64 instruction set (subset: mov, add, call, ret, jmp, etc.)",
+        "Register names (rax, rbx, rsp, rip, etc.)",
+        "Calling conventions (System V AMD64 ABI for Linux/Unix)",
+        "Microsoft x64 calling convention for Windows",
+        "Stack frames and prologue/epilogue",
+        "Position-independent code (PIC) for ASLR"
+      ],
+      "ARM64": [
+        "ARM64 instruction set (subset: mov, add, bl, ret, etc.)",
+        "Register names (x0-x31, sp, lr, etc.)",
+        "ARM64 EABI calling convention",
+        "Stack alignment requirements",
+        "Branch encoding"
+      ]
+    },
+    "compiler_theory": [
+      "Register allocation algorithms (graph coloring, linear scan)",
+      "Instruction selection patterns",
+      "Peephole optimization",
+      "Dead code elimination",
+      "Common subexpression elimination"
+    ],
+    "systems_programming": [
+      "ELF/Mach-O/PE executable formats",
+      "Object files and symbol tables",
+      "Relocation types",
+      "Dynamic linking basics",
+      "System call interfaces"
+    ]
+  },
+
+  "resources": {
+    "reference_documents": [
+      "/home/lewey/Desktop/MyLanguage/01-SPECIFICATION/GRAMMAR.md",
+      "/home/lewey/Desktop/MyLanguage/00-VISION/EXECUTION_MODEL.md",
+      "/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/src/parser/lexer.js",
+      "/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/src/parser/parser.js",
+      "/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/src/runtime/scheduler.js"
+    ],
+    "examples": "/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/examples/",
+    "test_programs": [
+      "hello_world.mycelial",
+      "pipeline.mycelial",
+      "map_reduce.mycelial",
+      "distributed_search.mycelial",
+      "consensus.mycelial",
+      "clawed_code.mycelial"
+    ]
+  },
+
+  "coordination_rules": {
+    "decision_making": "Haiku makes final calls, but consults Opus on systems decisions and Sonnet on language decisions",
+    "code_review": "Major architecture changes require approval from Opus",
+    "documentation": "Sonnet ensures all design is documented formally",
+    "timeline": "6-12 months at high intensity (20-30 hrs/week per model)",
+    "success_metric": "Fixed point verification: mycelial-compiler compiles itself identically"
+  },
+
+  "phase_1_plan": {
+    "this_week": "M0 - Complete architecture planning",
+    "tasks": [
+      {
+        "task": "Opus: Design x86-64 code generation strategy",
+        "owner": "Opus",
+        "description": "Create detailed plan for how IR → x86-64 machine code"
+      },
+      {
+        "task": "Opus: Design ARM64 code generation strategy",
+        "owner": "Opus",
+        "description": "Create detailed plan for how IR → ARM64 machine code"
+      },
+      {
+        "task": "Sonnet: Refine Mycelial grammar for compiler",
+        "owner": "Sonnet",
+        "description": "Identify what language features are needed to write the compiler itself"
+      },
+      {
+        "task": "Sonnet: Design IR specification",
+        "owner": "Sonnet",
+        "description": "What should the intermediate representation look like? Agent-based?"
+      },
+      {
+        "task": "Haiku: Create implementation roadmap",
+        "owner": "Haiku",
+        "description": "Detailed week-by-week implementation plan based on architecture"
+      }
+    ]
+  },
+
+  "communication": {
+    "format": "JSON-based handoff files",
+    "location": "/home/lewey/Desktop/MyLanguage/compiler-team/",
+    "types": [
+      "architecture_decisions.json - Design decisions and rationale",
+      "implementation_status.json - Current progress and blockers",
+      "knowledge_base.json - CPU arch, algorithms, strategies",
+      "todo_assignments.json - Who is doing what"
+    ]
+  },
+
+  "notes": {
+    "user_philosophy": "Build something beautiful. No compromises. We'll figure out the constraints as we go. Time doesn't matter.",
+    "team_philosophy": "Haiku + Opus + Sonnet together can do anything.",
+    "commitment": "This is real. We're building a compiler that speaks machine code. Direct. Pure. Ours."
+  }
+}

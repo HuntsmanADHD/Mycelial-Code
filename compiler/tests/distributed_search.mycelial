@@ -1,0 +1,247 @@
+# Distributed Search Network
+# A practical example of mycelial computation:
+# Multiple worker hyphae search a dataset in parallel,
+# with a coordinator managing distribution and aggregating results.
+
+network DistributedSearch {
+  # Define the signal types (frequencies)
+  frequencies {
+    query {
+      id: u32
+      search_term: string
+    }
+
+    search_task {
+      task_id: u32
+      shard_id: u32
+      term: string
+    }
+
+    result {
+      task_id: u32
+      matches: u32
+      shard_id: u32
+    }
+
+    complete {
+      query_id: u32
+      total_matches: u32
+    }
+
+    heartbeat {
+      # Empty—just a pulse
+    }
+
+    metrics {
+      query_count: u32
+      avg_latency: f64
+    }
+  }
+
+  # Define the hyphal agents (local rule-based actors)
+  hyphae {
+    # The coordinator receives queries and distributes them to workers
+    hyphal coordinator {
+      state {
+        queries_processed: u32 = 0
+        pending_results: map<u32, u32> = {}
+        worker_status: map<string, boolean> = {}
+      }
+
+      on signal(query, q) {
+        state.queries_processed = state.queries_processed + 1
+
+        # Distribute task to all workers
+        emit search_task { task_id: q.id, shard_id: 1, term: q.search_term }
+        emit search_task { task_id: q.id, shard_id: 2, term: q.search_term }
+        emit search_task { task_id: q.id, shard_id: 3, term: q.search_term }
+
+        # Track that we're expecting 3 results
+        state.pending_results[q.id] = 3
+      }
+
+      on signal(result, r) {
+        # Decrement expected result count
+        if state.pending_results[r.task_id] > 0 {
+          state.pending_results[r.task_id] = state.pending_results[r.task_id] - 1
+
+          # Accumulate matches
+          if state.pending_results[r.task_id] == 0 {
+            # All workers have reported for this query
+            emit complete { query_id: r.task_id, total_matches: r.matches }
+            state.pending_results.remove(r.task_id)
+          }
+        }
+      }
+
+      on signal(heartbeat) {
+        # Periodically report health
+        report health: "active"
+      }
+
+      on rest {
+        # Cleanup at end of cycle
+        report metric: state.queries_processed
+      }
+    }
+
+    # Worker hyphae search their assigned shards
+    hyphal worker {
+      state {
+        shard_id: u32 = 0
+        tasks_processed: u32 = 0
+        last_heartbeat: u32 = 0
+      }
+
+      on signal(search_task, t) {
+        # Simulate searching a shard
+        state.tasks_processed = state.tasks_processed + 1
+
+        let matches = search_shard(state.shard_id, t.term)
+
+        emit result {
+          task_id: t.task_id,
+          matches: matches,
+          shard_id: state.shard_id
+        }
+      }
+
+      on signal(heartbeat) {
+        state.last_heartbeat = state.last_heartbeat + 1
+
+        # If not heard from coordinator in too long, it's dead
+        if state.last_heartbeat > 10 {
+          report health: "coordinator_missing"
+          # Could spawn recovery logic here
+        }
+      }
+
+      on rest {
+        report tasks_completed: state.tasks_processed
+      }
+    }
+
+    # A monitor watches network health
+    hyphal monitor {
+      state {
+        cycle_count: u32 = 0
+        query_rate: f64 = 0.0
+        error_count: u32 = 0
+      }
+
+      on signal(heartbeat) {
+        state.cycle_count = state.cycle_count + 1
+
+        # Every 100 cycles, check health
+        if state.cycle_count % 100 == 0 {
+          emit status_check { }
+          report cycles: state.cycle_count
+        }
+      }
+
+      on cycle 50 {
+        # Periodic metrics emission
+        emit metrics {
+          query_count: state.cycle_count,
+          avg_latency: 42.5
+        }
+      }
+
+      on rest {
+        report health: "monitoring"
+      }
+    }
+  }
+
+  # Define the network topology
+  topology {
+    # External interfaces
+    fruiting_body input          # Where queries arrive
+    fruiting_body output         # Where results go
+    fruiting_body diagnostics    # Where metrics/health go
+
+    # Spawn instances of each hyphal type
+    spawn coordinator as C1
+    spawn worker as W1
+    spawn worker as W2
+    spawn worker as W3
+    spawn monitor as M1
+
+    # Connect input queries to coordinator
+    socket input -> C1 (frequency: query)
+
+    # Distribute search tasks to workers
+    socket C1 -> W1 (frequency: search_task)
+    socket C1 -> W2 (frequency: search_task)
+    socket C1 -> W3 (frequency: search_task)
+
+    # Workers report results back to coordinator
+    socket W1 -> C1 (frequency: result)
+    socket W2 -> C1 (frequency: result)
+    socket W3 -> C1 (frequency: result)
+
+    # Coordinator sends results to output
+    socket C1 -> output (frequency: complete)
+
+    # Broadcast heartbeat to all agents
+    socket M1 -> * (frequency: heartbeat)
+
+    # Monitor receives status from all
+    socket C1 -> M1 (frequency: metrics)
+    socket W1 -> M1 (frequency: metrics)
+    socket W2 -> M1 (frequency: metrics)
+    socket W3 -> M1 (frequency: metrics)
+
+    # Send diagnostics externally
+    socket M1 -> diagnostics (frequency: metrics)
+  }
+
+  # Configuration
+  config {
+    cycle_period_ms: 100
+    max_buffer_size: 10000
+    enable_health_monitoring: true
+  }
+}
+
+# ==============================================================================
+# Hypothetical Execution Trace
+# ==============================================================================
+#
+# CYCLE 1:
+#   INPUT: query(id=1, search_term="rust")
+#   [SENSE] Coordinator receives query(1, "rust")
+#   [ACT]
+#     Coordinator emits:
+#       - search_task(1, 1, "rust") -> W1
+#       - search_task(1, 2, "rust") -> W2
+#       - search_task(1, 3, "rust") -> W3
+#     Coordinator state.pending_results[1] = 3
+#   [REST] Monitor reports cycle_count=1
+#
+# CYCLE 2:
+#   [SENSE]
+#     W1 receives search_task(1, 1, "rust")
+#     W2 receives search_task(1, 2, "rust")
+#     W3 receives search_task(1, 3, "rust")
+#   [ACT]
+#     W1 searches shard 1, finds 42 matches, emits result(1, 42, 1)
+#     W2 searches shard 2, finds 37 matches, emits result(1, 37, 2)
+#     W3 searches shard 3, finds 25 matches, emits result(1, 25, 3)
+#   [REST] Workers report tasks_processed=1
+#
+# CYCLE 3:
+#   [SENSE]
+#     Coordinator receives result(1, 42, 1), decrements pending to 2
+#     Coordinator receives result(1, 37, 2), decrements pending to 1
+#     Coordinator receives result(1, 25, 3), decrements pending to 0
+#   [ACT]
+#     Coordinator calculates: 42 + 37 + 25 = 104 total matches
+#     Coordinator emits complete(1, 104) -> output
+#   [REST]
+#     Coordinator reports queries_processed=1
+#     Monitor reports heartbeat pulse
+#
+# OUTPUT: complete(id=1, total_matches=104)
+#
+# ==============================================================================

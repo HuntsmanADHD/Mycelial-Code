@@ -1,0 +1,1417 @@
+# Mycelial Native Compiler - Main Orchestration File
+# Wires together all 5 compiler agents into a complete compilation pipeline
+#
+# Pipeline: Source Code -> Lexer -> Parser -> IR Generator -> Code Generator -> Assembler -> Linker -> ELF Binary
+#
+# Author: Opus (Claude Opus 4.5)
+# Date: 2026-01-01
+# Status: M1 Complete Pipeline Orchestration
+
+network mycelial_compiler {
+
+  # ============================================================================
+  # SECTION 1: FREQUENCY DEFINITIONS (All Signal Types)
+  # ============================================================================
+
+  frequencies {
+
+    # --------------------------------------------------------------------------
+    # 1.1 Compilation Control Signals
+    # --------------------------------------------------------------------------
+
+    # Request to compile a source file
+    compile_request {
+      source_file: string       # Path to .mycelial source file
+      output_file: string       # Path for output ELF binary
+    }
+
+    # Final compilation complete signal
+    compilation_complete {
+      output_file: string       # Path to generated binary
+      file_size: u64            # Size in bytes
+      success: boolean          # Overall success status
+    }
+
+    # Compilation error signal
+    compilation_error {
+      stage: string             # "lexer", "parser", "ir", "codegen", "assembler", "linker"
+      message: string           # Error description
+      line: u32                 # Source line (if applicable)
+      column: u32               # Source column (if applicable)
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.2 Lexer -> Parser Signals
+    # --------------------------------------------------------------------------
+
+    # Individual token from lexer
+    token {
+      type: string              # Token type (NETWORK, IDENTIFIER, NUMBER, etc.)
+      value: string             # Token value as string
+      line: u32                 # Source line number
+      column: u32               # Source column number
+    }
+
+    # Lexer completion signal
+    lex_complete {
+      token_count: u32          # Total tokens emitted
+      error_count: u32          # Number of lexer errors
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.3 Parser -> IR Generator Signals
+    # --------------------------------------------------------------------------
+
+    # Individual AST node (for streaming if needed)
+    ast_node {
+      node_type: string         # AST node type
+      node_id: u32              # Unique node identifier
+      parent_id: u32            # Parent node ID (0 for root)
+      data: string              # JSON-encoded node data
+    }
+
+    # Complete AST (primary handoff to IR generator)
+    ast_complete {
+      program: string           # Full Program AST (serialized)
+      node_count: u32           # Total AST nodes
+    }
+
+    # Parser error signal
+    parse_error {
+      message: string           # Error message
+      line: u32                 # Source line
+      column: u32               # Source column
+      expected: string          # Expected token/construct
+      found: string             # Actual token/construct
+    }
+
+    # Parser completion signal
+    parse_complete {
+      program_id: u32           # Program identifier
+      node_count: u32           # Total AST nodes
+      error_count: u32          # Number of parse errors
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.4 IR Generator -> Code Generator Signals
+    # --------------------------------------------------------------------------
+
+    # Individual IR instruction
+    ir_node {
+      op: string                # IROpcode (MOVE, ADD, SUB, etc.)
+      dst: string               # Destination operand
+      src1: string              # First source operand
+      src2: string              # Second source operand (optional)
+      type_size: u32            # Size in bytes (1, 2, 4, 8)
+      label: string             # Label for this instruction (optional)
+    }
+
+    # Function boundary signals
+    ir_function_start {
+      name: string              # Function name
+      params: string            # JSON-encoded parameter list
+      return_type: string       # Return type (I8, I16, I32, I64, PTR, VOID)
+    }
+
+    ir_function_end {
+      name: string              # Function name
+    }
+
+    # LIR function (alternative batch format)
+    lir_function {
+      name: string              # Function name
+      params: string            # JSON-encoded parameters
+      return_type: string       # Return type
+      basic_blocks: string      # JSON-encoded basic blocks
+    }
+
+    # LIR struct definition
+    lir_struct {
+      name: string              # Struct name
+      fields: string            # JSON-encoded field list
+      total_size: u32           # Total struct size in bytes
+      alignment: u32            # Struct alignment
+    }
+
+    # IR generation complete
+    ir_complete {
+      instruction_count: u32    # Total IR instructions
+      function_count: u32       # Number of functions
+      struct_count: u32         # Number of structs
+    }
+
+    # IR generation error
+    ir_error {
+      message: string           # Error message
+      location: string          # Source location info
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.5 Code Generator -> Assembler Signals
+    # --------------------------------------------------------------------------
+
+    # x86-64 assembly instruction
+    asm_instruction {
+      label: string             # Label for this instruction (optional)
+      mnemonic: string          # Instruction mnemonic (mov, add, etc.)
+      operands: string          # JSON-encoded operand list
+    }
+
+    # Data directive
+    asm_data {
+      label: string             # Data label
+      data_type: string         # "asciz", "quad", "byte", "align"
+      value: string             # Data value
+    }
+
+    # Section directive
+    asm_section {
+      name: string              # Section name (.text, .rodata, .data, .bss)
+    }
+
+    # Code generation complete
+    codegen_complete {
+      instruction_count: u32    # Total assembly instructions
+      function_count: u32       # Number of functions generated
+    }
+
+    # Register allocation complete (internal)
+    allocation_complete {
+      function_name: string     # Function name
+      vreg_count: u32           # Number of virtual registers
+      spill_count: u32          # Number of spilled registers
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.6 Assembler -> Linker Signals
+    # --------------------------------------------------------------------------
+
+    # Encoded machine code bytes
+    machine_code {
+      section: string           # Section name (.text, .rodata, etc.)
+      offset: u32               # Offset within section
+      bytes: string             # Hex-encoded byte string
+    }
+
+    # Relocation entry
+    relocation {
+      section: string           # Section containing relocation
+      offset: u32               # Offset within section
+      symbol: string            # Symbol name
+      reloc_type: string        # R_X86_64_PC32, R_X86_64_64, etc.
+      addend: i64               # Addend value
+    }
+
+    # Symbol definition
+    symbol_def {
+      name: string              # Symbol name
+      section: string           # Section containing symbol
+      offset: u32               # Offset within section
+      is_global: boolean        # Global visibility
+    }
+
+    # Section metadata
+    section_info {
+      name: string              # Section name
+      size: u32                 # Section size in bytes
+      flags: u32                # Section flags (SHF_ALLOC, SHF_EXECINSTR, etc.)
+    }
+
+    # Assembly complete
+    asm_complete {
+      total_bytes: u32          # Total machine code bytes
+      symbol_count: u32         # Number of symbols
+      relocation_count: u32     # Number of relocations
+    }
+
+    # Assembly error
+    asm_error {
+      message: string           # Error message
+      line: u32                 # Line number in assembly
+      instruction: string       # Problematic instruction
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.7 Linker Output Signals
+    # --------------------------------------------------------------------------
+
+    # Linking complete
+    link_complete {
+      output_file: string       # Path to output binary
+      file_size: u64            # Binary size in bytes
+      entry_point: u64          # Entry point virtual address
+    }
+
+    # Linking error
+    link_error {
+      message: string           # Error message
+      symbol: string            # Problematic symbol (if applicable)
+    }
+
+    # ELF binary data (internal)
+    elf_binary {
+      bytes: string             # Hex-encoded ELF binary
+    }
+  }
+
+  # ============================================================================
+  # SECTION 2: TYPE DEFINITIONS
+  # ============================================================================
+
+  types {
+
+    # Token type enumeration
+    enum TokenType {
+      # Keywords
+      NETWORK, FREQUENCIES, FREQUENCY, HYPHAE, HYPHAL,
+      STATE, ON, SIGNAL, EMIT, REPORT, SPAWN, DIE,
+      SOCKET, FRUITING_BODY, TOPOLOGY, CONFIG,
+      IF, ELSE, WHERE, REST, CYCLE, LET, FOR, IN, WHILE,
+      TRUE, FALSE,
+      # Type keywords
+      U8, U16, U32, U64, I8, I16, I32, I64, F32, F64,
+      STRING_TYPE, BINARY_TYPE, BOOLEAN_TYPE,
+      VEC, QUEUE, MAP,
+      # Literals
+      NUMBER, STRING_LIT, IDENTIFIER,
+      # Operators
+      PLUS, MINUS, STAR, SLASH, PERCENT,
+      EQ, NE, LT, GT, LE, GE,
+      AND, OR, NOT,
+      ASSIGN, ARROW, COLON, DOT, COMMA,
+      # Delimiters
+      LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
+      # Special
+      EOF, ERROR
+    }
+
+    # Token structure
+    struct Token {
+      type: TokenType
+      value: string
+      line: u32
+      column: u32
+    }
+
+    # Compilation stage enumeration
+    enum CompileStage {
+      IDLE,
+      LEXING,
+      PARSING,
+      IR_GENERATION,
+      CODE_GENERATION,
+      ASSEMBLING,
+      LINKING,
+      COMPLETE,
+      ERROR
+    }
+  }
+
+  # ============================================================================
+  # SECTION 3: LEXER HYPHAL
+  # ============================================================================
+
+  hyphae {
+
+    hyphal lexer {
+      state {
+        source: string                    # Source code to tokenize
+        filename: string                  # Source filename
+        position: u32                     # Current position in source
+        line: u32                         # Current line number
+        column: u32                       # Current column number
+        tokens_emitted: u32               # Count of tokens emitted
+        error_count: u32                  # Lexer error count
+
+        # Keyword lookup table
+        keywords: map<string, string>     # Word -> Token type mapping
+      }
+
+      # Initialize lexer state
+      on rest {
+        state.position = 0
+        state.line = 1
+        state.column = 1
+        state.tokens_emitted = 0
+        state.error_count = 0
+
+        # Initialize keywords map
+        state.keywords = map_new()
+        map_insert(state.keywords, "network", "NETWORK")
+        map_insert(state.keywords, "frequencies", "FREQUENCIES")
+        map_insert(state.keywords, "frequency", "FREQUENCY")
+        map_insert(state.keywords, "hyphae", "HYPHAE")
+        map_insert(state.keywords, "hyphal", "HYPHAL")
+        map_insert(state.keywords, "state", "STATE")
+        map_insert(state.keywords, "on", "ON")
+        map_insert(state.keywords, "signal", "SIGNAL")
+        map_insert(state.keywords, "emit", "EMIT")
+        map_insert(state.keywords, "report", "REPORT")
+        map_insert(state.keywords, "spawn", "SPAWN")
+        map_insert(state.keywords, "die", "DIE")
+        map_insert(state.keywords, "socket", "SOCKET")
+        map_insert(state.keywords, "fruiting_body", "FRUITING_BODY")
+        map_insert(state.keywords, "topology", "TOPOLOGY")
+        map_insert(state.keywords, "config", "CONFIG")
+        map_insert(state.keywords, "if", "IF")
+        map_insert(state.keywords, "else", "ELSE")
+        map_insert(state.keywords, "where", "WHERE")
+        map_insert(state.keywords, "rest", "REST")
+        map_insert(state.keywords, "cycle", "CYCLE")
+        map_insert(state.keywords, "let", "LET")
+        map_insert(state.keywords, "for", "FOR")
+        map_insert(state.keywords, "in", "IN")
+        map_insert(state.keywords, "while", "WHILE")
+        map_insert(state.keywords, "true", "TRUE")
+        map_insert(state.keywords, "false", "FALSE")
+        map_insert(state.keywords, "u8", "U8")
+        map_insert(state.keywords, "u16", "U16")
+        map_insert(state.keywords, "u32", "U32")
+        map_insert(state.keywords, "u64", "U64")
+        map_insert(state.keywords, "i8", "I8")
+        map_insert(state.keywords, "i16", "I16")
+        map_insert(state.keywords, "i32", "I32")
+        map_insert(state.keywords, "i64", "I64")
+        map_insert(state.keywords, "f32", "F32")
+        map_insert(state.keywords, "f64", "F64")
+        map_insert(state.keywords, "string", "STRING_TYPE")
+        map_insert(state.keywords, "binary", "BINARY_TYPE")
+        map_insert(state.keywords, "boolean", "BOOLEAN_TYPE")
+        map_insert(state.keywords, "vec", "VEC")
+        map_insert(state.keywords, "queue", "QUEUE")
+        map_insert(state.keywords, "map", "MAP")
+      }
+
+      # Receive tokenization request
+      on signal(lex_request, req) {
+        state.source = req.source
+        state.filename = req.filename
+        state.position = 0
+        state.line = 1
+        state.column = 1
+        state.tokens_emitted = 0
+        state.error_count = 0
+
+        # Start tokenization
+        tokenize_all()
+      }
+
+      # Main tokenization loop
+      rule tokenize_all() {
+        while state.position < string_len(state.source) {
+          skip_whitespace_and_comments()
+
+          if state.position >= string_len(state.source) {
+            break
+          }
+
+          let tok = next_token()
+          emit token {
+            type: tok.type,
+            value: tok.value,
+            line: tok.line,
+            column: tok.column
+          }
+          state.tokens_emitted = state.tokens_emitted + 1
+        }
+
+        # Emit EOF token
+        emit token {
+          type: "EOF",
+          value: "",
+          line: state.line,
+          column: state.column
+        }
+        state.tokens_emitted = state.tokens_emitted + 1
+
+        # Signal completion
+        emit lex_complete {
+          token_count: state.tokens_emitted,
+          error_count: state.error_count
+        }
+      }
+
+      # Peek at current character
+      rule peek(offset: u32) -> string {
+        let pos = state.position + offset
+        if pos >= string_len(state.source) {
+          return ""
+        }
+        return string_char_at(state.source, pos)
+      }
+
+      # Advance position and return current character
+      rule advance() -> string {
+        if state.position >= string_len(state.source) {
+          return ""
+        }
+
+        let ch = string_char_at(state.source, state.position)
+        state.position = state.position + 1
+
+        if ch == "\n" {
+          state.line = state.line + 1
+          state.column = 1
+        } else {
+          state.column = state.column + 1
+        }
+
+        return ch
+      }
+
+      # Skip whitespace
+      rule skip_whitespace() {
+        while state.position < string_len(state.source) {
+          let ch = peek(0)
+          if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" {
+            advance()
+          } else {
+            break
+          }
+        }
+      }
+
+      # Skip comment (# to end of line)
+      rule skip_comment() -> boolean {
+        if peek(0) == "#" {
+          while state.position < string_len(state.source) && peek(0) != "\n" {
+            advance()
+          }
+          if peek(0) == "\n" {
+            advance()
+          }
+          return true
+        }
+        return false
+      }
+
+      # Skip whitespace and comments
+      rule skip_whitespace_and_comments() {
+        while true {
+          skip_whitespace()
+          if !skip_comment() {
+            break
+          }
+        }
+      }
+
+      # Read a number (integer or float)
+      rule read_number() -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let num_str = ""
+
+        # Read integer part
+        while state.position < string_len(state.source) && is_digit(peek(0)) {
+          num_str = string_concat(num_str, advance())
+        }
+
+        # Read decimal part if present
+        if peek(0) == "." && is_digit(peek(1)) {
+          num_str = string_concat(num_str, advance())  # consume '.'
+          while state.position < string_len(state.source) && is_digit(peek(0)) {
+            num_str = string_concat(num_str, advance())
+          }
+        }
+
+        return Token {
+          type: "NUMBER",
+          value: num_str,
+          line: start_line,
+          column: start_col
+        }
+      }
+
+      # Read a string literal
+      rule read_string(quote: string) -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let str_val = ""
+
+        advance()  # consume opening quote
+
+        while state.position < string_len(state.source) && peek(0) != quote {
+          if peek(0) == "\\" {
+            advance()  # consume backslash
+            let next_ch = advance()
+            if next_ch == "n" {
+              str_val = string_concat(str_val, "\n")
+            } else if next_ch == "t" {
+              str_val = string_concat(str_val, "\t")
+            } else if next_ch == "r" {
+              str_val = string_concat(str_val, "\r")
+            } else if next_ch == "\\" {
+              str_val = string_concat(str_val, "\\")
+            } else if next_ch == "\"" {
+              str_val = string_concat(str_val, "\"")
+            } else if next_ch == "'" {
+              str_val = string_concat(str_val, "'")
+            } else {
+              str_val = string_concat(str_val, next_ch)
+            }
+          } else {
+            str_val = string_concat(str_val, advance())
+          }
+        }
+
+        if state.position >= string_len(state.source) {
+          state.error_count = state.error_count + 1
+          emit compilation_error {
+            stage: "lexer",
+            message: "Unterminated string literal",
+            line: start_line,
+            column: start_col
+          }
+        } else {
+          advance()  # consume closing quote
+        }
+
+        return Token {
+          type: "STRING_LIT",
+          value: str_val,
+          line: start_line,
+          column: start_col
+        }
+      }
+
+      # Read an identifier or keyword
+      rule read_identifier() -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let ident = ""
+
+        while state.position < string_len(state.source) && is_alnum_or_underscore(peek(0)) {
+          ident = string_concat(ident, advance())
+        }
+
+        # Check if it's a keyword
+        if map_contains(state.keywords, ident) {
+          return Token {
+            type: map_get(state.keywords, ident),
+            value: ident,
+            line: start_line,
+            column: start_col
+          }
+        }
+
+        return Token {
+          type: "IDENTIFIER",
+          value: ident,
+          line: start_line,
+          column: start_col
+        }
+      }
+
+      # Get next token
+      rule next_token() -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let ch = peek(0)
+
+        # Numbers
+        if is_digit(ch) {
+          return read_number()
+        }
+
+        # Strings
+        if ch == "\"" || ch == "'" {
+          return read_string(ch)
+        }
+
+        # Identifiers and keywords
+        if is_alpha_or_underscore(ch) {
+          return read_identifier()
+        }
+
+        # Two-character operators
+        let two_char = string_concat(ch, peek(1))
+
+        if two_char == "->" {
+          advance()
+          advance()
+          return Token { type: "ARROW", value: "->", line: start_line, column: start_col }
+        }
+
+        if two_char == "==" {
+          advance()
+          advance()
+          return Token { type: "EQ", value: "==", line: start_line, column: start_col }
+        }
+
+        if two_char == "!=" {
+          advance()
+          advance()
+          return Token { type: "NE", value: "!=", line: start_line, column: start_col }
+        }
+
+        if two_char == "<=" {
+          advance()
+          advance()
+          return Token { type: "LE", value: "<=", line: start_line, column: start_col }
+        }
+
+        if two_char == ">=" {
+          advance()
+          advance()
+          return Token { type: "GE", value: ">=", line: start_line, column: start_col }
+        }
+
+        if two_char == "&&" {
+          advance()
+          advance()
+          return Token { type: "AND", value: "&&", line: start_line, column: start_col }
+        }
+
+        if two_char == "||" {
+          advance()
+          advance()
+          return Token { type: "OR", value: "||", line: start_line, column: start_col }
+        }
+
+        # Single-character tokens
+        advance()
+
+        if ch == "{" {
+          return Token { type: "LBRACE", value: "{", line: start_line, column: start_col }
+        }
+        if ch == "}" {
+          return Token { type: "RBRACE", value: "}", line: start_line, column: start_col }
+        }
+        if ch == "(" {
+          return Token { type: "LPAREN", value: "(", line: start_line, column: start_col }
+        }
+        if ch == ")" {
+          return Token { type: "RPAREN", value: ")", line: start_line, column: start_col }
+        }
+        if ch == "[" {
+          return Token { type: "LBRACKET", value: "[", line: start_line, column: start_col }
+        }
+        if ch == "]" {
+          return Token { type: "RBRACKET", value: "]", line: start_line, column: start_col }
+        }
+        if ch == "," {
+          return Token { type: "COMMA", value: ",", line: start_line, column: start_col }
+        }
+        if ch == ":" {
+          return Token { type: "COLON", value: ":", line: start_line, column: start_col }
+        }
+        if ch == "." {
+          return Token { type: "DOT", value: ".", line: start_line, column: start_col }
+        }
+        if ch == "=" {
+          return Token { type: "ASSIGN", value: "=", line: start_line, column: start_col }
+        }
+        if ch == "+" {
+          return Token { type: "PLUS", value: "+", line: start_line, column: start_col }
+        }
+        if ch == "-" {
+          return Token { type: "MINUS", value: "-", line: start_line, column: start_col }
+        }
+        if ch == "*" {
+          return Token { type: "STAR", value: "*", line: start_line, column: start_col }
+        }
+        if ch == "/" {
+          return Token { type: "SLASH", value: "/", line: start_line, column: start_col }
+        }
+        if ch == "%" {
+          return Token { type: "PERCENT", value: "%", line: start_line, column: start_col }
+        }
+        if ch == "<" {
+          return Token { type: "LT", value: "<", line: start_line, column: start_col }
+        }
+        if ch == ">" {
+          return Token { type: "GT", value: ">", line: start_line, column: start_col }
+        }
+        if ch == "!" {
+          return Token { type: "NOT", value: "!", line: start_line, column: start_col }
+        }
+        if ch == "@" {
+          return Token { type: "AT", value: "@", line: start_line, column: start_col }
+        }
+
+        # Unknown character - emit error
+        state.error_count = state.error_count + 1
+        emit compilation_error {
+          stage: "lexer",
+          message: format("Unexpected character: '{}'", ch),
+          line: start_line,
+          column: start_col
+        }
+
+        return Token { type: "ERROR", value: ch, line: start_line, column: start_col }
+      }
+
+      # Helper: check if character is a digit
+      rule is_digit(ch: string) -> boolean {
+        return ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" ||
+               ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"
+      }
+
+      # Helper: check if character is alphabetic or underscore
+      rule is_alpha_or_underscore(ch: string) -> boolean {
+        return ch == "_" ||
+               (ch >= "a" && ch <= "z") ||
+               (ch >= "A" && ch <= "Z")
+      }
+
+      # Helper: check if character is alphanumeric or underscore
+      rule is_alnum_or_underscore(ch: string) -> boolean {
+        return is_alpha_or_underscore(ch) || is_digit(ch)
+      }
+    }
+  }
+
+  # ============================================================================
+  # SECTION 4: AGENT IMPORTS
+  # ============================================================================
+  #
+  # The following agents are imported from their respective source files.
+  # Each agent is a self-contained hyphal definition that processes signals.
+  #
+  # Import paths:
+  #   - /compiler/parser.mycelial       (1,972 lines)
+  #   - /compiler/ir_generator.mycelial (1,651 lines)
+  #   - /compiler/x86_codegen.mycelial  (1,230 lines)
+  #   - /compiler/assembler.mycelial    (1,815 lines)
+  #   - /compiler/linker.mycelial       (1,050 lines)
+  #
+  # Total agent code: 7,718 lines
+  #
+  # Note: In the Mycelial runtime, these would be imported with:
+  #   import "/compiler/parser.mycelial" as parser
+  #   import "/compiler/ir_generator.mycelial" as ir_generator
+  #   import "/compiler/x86_codegen.mycelial" as codegen
+  #   import "/compiler/assembler.mycelial" as assembler
+  #   import "/compiler/linker.mycelial" as linker
+  #
+  # For this orchestration file, the agents are referenced by their
+  # hyphal names and will be loaded by the runtime.
+
+  # ============================================================================
+  # SECTION 5: ORCHESTRATOR HYPHAL
+  # ============================================================================
+
+  hyphae {
+
+    hyphal orchestrator {
+      state {
+        # Current compilation stage
+        stage: string                     # Current pipeline stage
+
+        # Input/output files
+        source_file: string               # Path to source .mycelial file
+        output_file: string               # Path to output binary
+        source_code: string               # Loaded source code
+
+        # Inter-agent buffers
+        tokens: vec<Token>                # Buffered tokens from lexer
+        token_count: u32                  # Token count
+
+        ast_data: string                  # Serialized AST from parser
+        ast_node_count: u32               # AST node count
+
+        ir_instructions: vec<string>      # Buffered IR instructions (JSON)
+        ir_function_count: u32            # Function count
+        ir_struct_count: u32              # Struct count
+
+        asm_instructions: vec<string>     # Buffered assembly instructions
+        asm_instruction_count: u32        # Instruction count
+
+        machine_code_sections: map<string, vec<u8>>  # Section -> bytes
+        relocations: vec<string>          # Buffered relocations (JSON)
+        symbols: map<string, u64>         # Symbol table
+
+        elf_binary: vec<u8>               # Final ELF binary bytes
+
+        # Progress tracking
+        error_count: u32                  # Total errors
+        errors: vec<string>               # Error messages
+
+        # Timing
+        start_time: u64                   # Compilation start time
+        stage_times: map<string, u64>     # Per-stage timing
+      }
+
+      # Initialize orchestrator
+      on rest {
+        state.stage = "IDLE"
+        state.error_count = 0
+        state.token_count = 0
+        state.ast_node_count = 0
+        state.ir_function_count = 0
+        state.ir_struct_count = 0
+        state.asm_instruction_count = 0
+        state.tokens = vec_new()
+        state.ir_instructions = vec_new()
+        state.asm_instructions = vec_new()
+        state.machine_code_sections = map_new()
+        state.relocations = vec_new()
+        state.symbols = map_new()
+        state.errors = vec_new()
+        state.stage_times = map_new()
+      }
+
+      # --------------------------------------------------------------------------
+      # Main Compilation Entry Point
+      # --------------------------------------------------------------------------
+
+      on signal(compile_request, req) {
+        state.source_file = req.source_file
+        state.output_file = req.output_file
+        state.stage = "LEXING"
+        state.start_time = time_now()
+        state.error_count = 0
+
+        report status { message: format("Compiling: {}", req.source_file) }
+
+        # Read source file
+        state.source_code = read_file(req.source_file)
+
+        if string_len(state.source_code) == 0 {
+          emit compilation_error {
+            stage: "orchestrator",
+            message: format("Failed to read source file: {}", req.source_file),
+            line: 0,
+            column: 0
+          }
+          state.stage = "ERROR"
+          return
+        }
+
+        report status { message: "  -> Lexing..." }
+
+        # Start lexer
+        emit lex_request {
+          source: state.source_code,
+          filename: req.source_file
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Lexer -> Parser Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer tokens from lexer
+      on signal(token, t) {
+        vec_push(state.tokens, t)
+        state.token_count = state.token_count + 1
+      }
+
+      # Lexer complete - trigger parser
+      on signal(lex_complete, lc) {
+        map_insert(state.stage_times, "lexing", time_now() - state.start_time)
+
+        if lc.error_count > 0 {
+          state.error_count = state.error_count + lc.error_count
+          report status { message: format("  -> Lexer errors: {}", lc.error_count) }
+        }
+
+        report status { message: format("  -> Lexed {} tokens", lc.token_count) }
+        report status { message: "  -> Parsing..." }
+
+        state.stage = "PARSING"
+
+        # Forward tokens to parser
+        for tok in state.tokens {
+          emit token {
+            type: tok.type,
+            value: tok.value,
+            line: tok.line,
+            column: tok.column
+          }
+        }
+
+        # Signal lexer complete to parser
+        emit lex_complete {
+          token_count: lc.token_count,
+          error_count: lc.error_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Parser -> IR Generator Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer AST nodes
+      on signal(ast_node, node) {
+        state.ast_node_count = state.ast_node_count + 1
+      }
+
+      # Receive complete AST
+      on signal(ast_complete, ast) {
+        state.ast_data = ast.program
+        state.ast_node_count = ast.node_count
+      }
+
+      # Handle parse errors
+      on signal(parse_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("Parse error at {}:{}: {} (expected {}, found {})",
+          err.line, err.column, err.message, err.expected, err.found))
+      }
+
+      # Parser complete - trigger IR generator
+      on signal(parse_complete, pc) {
+        map_insert(state.stage_times, "parsing", time_now() - state.start_time)
+
+        report status { message: format("  -> Parsed {} AST nodes", pc.node_count) }
+
+        if pc.error_count > 0 {
+          state.error_count = state.error_count + pc.error_count
+          report status { message: format("  -> Parse errors: {}", pc.error_count) }
+
+          # Abort if too many errors
+          if state.error_count > 10 {
+            state.stage = "ERROR"
+            emit compilation_error {
+              stage: "parser",
+              message: "Too many errors, aborting compilation",
+              line: 0,
+              column: 0
+            }
+            return
+          }
+        }
+
+        report status { message: "  -> Generating IR..." }
+
+        state.stage = "IR_GENERATION"
+
+        # Forward AST to IR generator
+        emit ast_complete {
+          program: state.ast_data,
+          node_count: state.ast_node_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # IR Generator -> Code Generator Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer IR nodes
+      on signal(ir_node, node) {
+        vec_push(state.ir_instructions, json_encode(node))
+      }
+
+      # Track function boundaries
+      on signal(ir_function_start, fstart) {
+        state.ir_function_count = state.ir_function_count + 1
+        # Forward to code generator
+        emit ir_function_start {
+          name: fstart.name,
+          params: fstart.params,
+          return_type: fstart.return_type
+        }
+      }
+
+      on signal(ir_function_end, fend) {
+        emit ir_function_end { name: fend.name }
+      }
+
+      # Receive LIR functions (alternative format)
+      on signal(lir_function, func) {
+        state.ir_function_count = state.ir_function_count + 1
+      }
+
+      # Receive LIR structs
+      on signal(lir_struct, st) {
+        state.ir_struct_count = state.ir_struct_count + 1
+      }
+
+      # Handle IR errors
+      on signal(ir_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("IR error: {} at {}", err.message, err.location))
+      }
+
+      # IR generation complete - trigger code generator
+      on signal(ir_complete, ic) {
+        map_insert(state.stage_times, "ir_generation", time_now() - state.start_time)
+
+        report status { message: format("  -> Generated {} IR instructions, {} functions, {} structs",
+          ic.instruction_count, ic.function_count, ic.struct_count) }
+
+        report status { message: "  -> Generating x86-64 code..." }
+
+        state.stage = "CODE_GENERATION"
+
+        # Signal IR complete to code generator
+        emit ir_complete {
+          instruction_count: ic.instruction_count,
+          function_count: ic.function_count,
+          struct_count: ic.struct_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Code Generator -> Assembler Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer assembly instructions
+      on signal(asm_instruction, instr) {
+        vec_push(state.asm_instructions, json_encode(instr))
+        state.asm_instruction_count = state.asm_instruction_count + 1
+
+        # Forward to assembler
+        emit asm_instruction {
+          label: instr.label,
+          mnemonic: instr.mnemonic,
+          operands: instr.operands
+        }
+      }
+
+      # Buffer data directives
+      on signal(asm_data, data) {
+        emit asm_data {
+          label: data.label,
+          data_type: data.data_type,
+          value: data.value
+        }
+      }
+
+      # Buffer section directives
+      on signal(asm_section, sect) {
+        emit asm_section { name: sect.name }
+      }
+
+      # Code generation complete - trigger assembler
+      on signal(codegen_complete, cc) {
+        map_insert(state.stage_times, "code_generation", time_now() - state.start_time)
+
+        report status { message: format("  -> Generated {} assembly instructions, {} functions",
+          cc.instruction_count, cc.function_count) }
+
+        report status { message: "  -> Assembling..." }
+
+        state.stage = "ASSEMBLING"
+
+        # Signal codegen complete to assembler
+        emit codegen_complete {
+          instruction_count: cc.instruction_count,
+          function_count: cc.function_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Assembler -> Linker Transition
+      # --------------------------------------------------------------------------
+
+      # Receive machine code
+      on signal(machine_code, mc) {
+        let section_bytes = map_get_or_default(state.machine_code_sections, mc.section, vec_new())
+        let decoded_bytes = hex_decode(mc.bytes)
+        for b in decoded_bytes {
+          vec_push(section_bytes, b)
+        }
+        map_insert(state.machine_code_sections, mc.section, section_bytes)
+
+        # Forward to linker
+        emit machine_code {
+          section: mc.section,
+          offset: mc.offset,
+          bytes: mc.bytes
+        }
+      }
+
+      # Receive relocations
+      on signal(relocation, rel) {
+        vec_push(state.relocations, json_encode(rel))
+
+        # Forward to linker
+        emit relocation {
+          section: rel.section,
+          offset: rel.offset,
+          symbol: rel.symbol,
+          reloc_type: rel.reloc_type,
+          addend: rel.addend
+        }
+      }
+
+      # Receive symbol definitions
+      on signal(symbol_def, sym) {
+        map_insert(state.symbols, sym.name, sym.offset)
+
+        # Forward to linker
+        emit symbol_def {
+          name: sym.name,
+          section: sym.section,
+          offset: sym.offset,
+          is_global: sym.is_global
+        }
+      }
+
+      # Receive section info
+      on signal(section_info, info) {
+        emit section_info {
+          name: info.name,
+          size: info.size,
+          flags: info.flags
+        }
+      }
+
+      # Handle assembly errors
+      on signal(asm_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("Assembly error at line {}: {} (instruction: {})",
+          err.line, err.message, err.instruction))
+      }
+
+      # Assembly complete - trigger linker
+      on signal(asm_complete, ac) {
+        map_insert(state.stage_times, "assembling", time_now() - state.start_time)
+
+        report status { message: format("  -> Assembled {} bytes, {} symbols, {} relocations",
+          ac.total_bytes, ac.symbol_count, ac.relocation_count) }
+
+        report status { message: "  -> Linking..." }
+
+        state.stage = "LINKING"
+
+        # Signal assembly complete to linker
+        emit asm_complete {
+          total_bytes: ac.total_bytes,
+          symbol_count: ac.symbol_count,
+          relocation_count: ac.relocation_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Linker Output Handling
+      # --------------------------------------------------------------------------
+
+      # Handle link errors
+      on signal(link_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("Link error: {} (symbol: {})", err.message, err.symbol))
+
+        state.stage = "ERROR"
+
+        emit compilation_error {
+          stage: "linker",
+          message: err.message,
+          line: 0,
+          column: 0
+        }
+      }
+
+      # Linking complete - finalize
+      on signal(link_complete, lc) {
+        map_insert(state.stage_times, "linking", time_now() - state.start_time)
+
+        let total_time = time_now() - state.start_time
+
+        state.stage = "COMPLETE"
+
+        report status { message: format("  -> Linked: {} ({} bytes)", lc.output_file, lc.file_size) }
+        report status { message: format("  -> Entry point: 0x{:X}", lc.entry_point) }
+        report status { message: "" }
+        report status { message: format("Compilation complete in {} ms", total_time) }
+
+        if state.error_count == 0 {
+          report status { message: format("SUCCESS: {} -> {}", state.source_file, state.output_file) }
+        } else {
+          report status { message: format("WARNINGS: {} errors encountered", state.error_count) }
+        }
+
+        # Emit final completion signal
+        emit compilation_complete {
+          output_file: lc.output_file,
+          file_size: lc.file_size,
+          success: state.error_count == 0
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Error Handling
+      # --------------------------------------------------------------------------
+
+      on signal(compilation_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("[{}] {}:{}: {}",
+          err.stage, err.line, err.column, err.message))
+
+        report status { message: format("ERROR [{}]: {}", err.stage, err.message) }
+      }
+    }
+  }
+
+  # ============================================================================
+  # SECTION 6: MAIN ENTRY POINT
+  # ============================================================================
+
+  hyphae {
+
+    hyphal main {
+      state {
+        default_source: string
+        default_output: string
+      }
+
+      on rest {
+        state.default_source = "tests/hello_world.mycelial"
+        state.default_output = "hello"
+      }
+
+      # Startup signal - begin compilation
+      on signal(startup, s) {
+        report status { message: "" }
+        report status { message: "========================================" }
+        report status { message: "     MYCELIAL NATIVE COMPILER" }
+        report status { message: "========================================" }
+        report status { message: "" }
+
+        # Use provided files or defaults
+        let source = if s.source_file != "" { s.source_file } else { state.default_source }
+        let output = if s.output_file != "" { s.output_file } else { state.default_output }
+
+        emit compile_request {
+          source_file: source,
+          output_file: output
+        }
+      }
+
+      # Handle compilation complete
+      on signal(compilation_complete, cc) {
+        report status { message: "" }
+
+        if cc.success {
+          report status { message: "========================================" }
+          report status { message: "     COMPILATION SUCCESSFUL" }
+          report status { message: "========================================" }
+          report status { message: "" }
+          report status { message: format("Output: {} ({} bytes)", cc.output_file, cc.file_size) }
+          report status { message: "" }
+          report status { message: "To run:" }
+          report status { message: format("  chmod +x {}", cc.output_file) }
+          report status { message: format("  ./{}", cc.output_file) }
+        } else {
+          report status { message: "========================================" }
+          report status { message: "     COMPILATION FAILED" }
+          report status { message: "========================================" }
+        }
+
+        report status { message: "" }
+      }
+    }
+  }
+
+  # ============================================================================
+  # SECTION 7: TOPOLOGY
+  # ============================================================================
+
+  topology {
+    # External interfaces
+    fruiting_body input      # Receives startup signal with file paths
+    fruiting_body output     # Emits final compilation status
+
+    # Spawn all agents
+    spawn main as M1
+    spawn orchestrator as O1
+    spawn lexer as L1
+
+    # Agent connections imported from external files:
+    # spawn parser as P1 (from /compiler/parser.mycelial)
+    # spawn ir_generator as IR1 (from /compiler/ir_generator.mycelial)
+    # spawn codegen as CG1 (from /compiler/x86_codegen.mycelial)
+    # spawn assembler as AS1 (from /compiler/assembler.mycelial)
+    # spawn linker as LK1 (from /compiler/linker.mycelial)
+
+    # Input to main
+    socket input -> M1 (frequency: startup)
+
+    # Main to orchestrator
+    socket M1 -> O1 (frequency: compile_request)
+
+    # Orchestrator to lexer
+    socket O1 -> L1 (frequency: lex_request)
+
+    # Lexer to orchestrator (tokens)
+    socket L1 -> O1 (frequency: token)
+    socket L1 -> O1 (frequency: lex_complete)
+
+    # Orchestrator forwards to parser
+    # socket O1 -> P1 (frequency: token)
+    # socket O1 -> P1 (frequency: lex_complete)
+
+    # Parser to orchestrator
+    # socket P1 -> O1 (frequency: ast_node)
+    # socket P1 -> O1 (frequency: ast_complete)
+    # socket P1 -> O1 (frequency: parse_error)
+    # socket P1 -> O1 (frequency: parse_complete)
+
+    # Orchestrator forwards to IR generator
+    # socket O1 -> IR1 (frequency: ast_complete)
+
+    # IR generator to orchestrator
+    # socket IR1 -> O1 (frequency: ir_node)
+    # socket IR1 -> O1 (frequency: ir_function_start)
+    # socket IR1 -> O1 (frequency: ir_function_end)
+    # socket IR1 -> O1 (frequency: lir_function)
+    # socket IR1 -> O1 (frequency: lir_struct)
+    # socket IR1 -> O1 (frequency: ir_complete)
+    # socket IR1 -> O1 (frequency: ir_error)
+
+    # Orchestrator forwards to code generator
+    # socket O1 -> CG1 (frequency: ir_node)
+    # socket O1 -> CG1 (frequency: ir_function_start)
+    # socket O1 -> CG1 (frequency: ir_function_end)
+    # socket O1 -> CG1 (frequency: ir_complete)
+
+    # Code generator to orchestrator
+    # socket CG1 -> O1 (frequency: asm_instruction)
+    # socket CG1 -> O1 (frequency: asm_data)
+    # socket CG1 -> O1 (frequency: asm_section)
+    # socket CG1 -> O1 (frequency: codegen_complete)
+
+    # Orchestrator forwards to assembler
+    # socket O1 -> AS1 (frequency: asm_instruction)
+    # socket O1 -> AS1 (frequency: asm_data)
+    # socket O1 -> AS1 (frequency: asm_section)
+    # socket O1 -> AS1 (frequency: codegen_complete)
+
+    # Assembler to orchestrator
+    # socket AS1 -> O1 (frequency: machine_code)
+    # socket AS1 -> O1 (frequency: relocation)
+    # socket AS1 -> O1 (frequency: symbol_def)
+    # socket AS1 -> O1 (frequency: section_info)
+    # socket AS1 -> O1 (frequency: asm_complete)
+    # socket AS1 -> O1 (frequency: asm_error)
+
+    # Orchestrator forwards to linker
+    # socket O1 -> LK1 (frequency: machine_code)
+    # socket O1 -> LK1 (frequency: relocation)
+    # socket O1 -> LK1 (frequency: symbol_def)
+    # socket O1 -> LK1 (frequency: section_info)
+    # socket O1 -> LK1 (frequency: asm_complete)
+
+    # Linker to orchestrator
+    # socket LK1 -> O1 (frequency: link_complete)
+    # socket LK1 -> O1 (frequency: link_error)
+
+    # Orchestrator to main (completion)
+    socket O1 -> M1 (frequency: compilation_complete)
+    socket O1 -> M1 (frequency: compilation_error)
+
+    # Main to output
+    socket M1 -> output (frequency: compilation_complete)
+  }
+}
+
+# ============================================================================
+# END OF ORCHESTRATION FILE
+# ============================================================================
+#
+# Total Structure:
+#   - 7 Sections
+#   - 35+ Frequency Definitions
+#   - 1 Lexer Hyphal (new)
+#   - 1 Orchestrator Hyphal
+#   - 1 Main Entry Hyphal
+#   - Complete Topology Definition
+#
+# Pipeline Flow:
+#   startup -> main -> orchestrator -> lexer -> parser -> ir_generator ->
+#   codegen -> assembler -> linker -> compilation_complete
+#
+# Author: Opus (Claude Opus 4.5)
+# Date: 2026-01-01
