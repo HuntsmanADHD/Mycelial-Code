@@ -55,11 +55,6 @@ class MycelialApp {
       this.handleFileSelect(e.target.files[0]);
     });
 
-    // Example selector
-    document.getElementById('examples').addEventListener('change', (e) => {
-      this.loadExample(e.target.value);
-    });
-
     // Parse button
     document.getElementById('btn-parse').addEventListener('click', () => {
       this.parseAndValidate();
@@ -133,6 +128,7 @@ class MycelialApp {
       .then(text => {
         this.editor.setValue(text);
         this.currentSource = text;
+        this.enableParseButton();
       })
       .catch(err => {
         this.displayError(`Failed to load example: ${err.message}`);
@@ -152,6 +148,7 @@ class MycelialApp {
     reader.onload = (e) => {
       this.editor.setValue(e.target.result);
       this.currentSource = e.target.result;
+      this.enableParseButton();
     };
     reader.readAsText(file);
   }
@@ -206,7 +203,9 @@ class MycelialApp {
       return true;
     } catch (e) {
       console.error('Parse error:', e);
-      this.displayError(e.message || 'Unknown parse error');
+      this.displayError(e.message || String(e) || 'Unknown parse error');
+      document.getElementById('btn-parse').textContent = '✗ Parse Failed';
+      document.getElementById('btn-parse').classList.add('error');
       return false;
     }
   }
@@ -325,6 +324,16 @@ class MycelialApp {
 
     document.getElementById('cycle-count').textContent = this.scheduler.runtime.cycleCount;
     document.getElementById('phase-info').textContent = `(${this.scheduler.runtime.phase})`;
+  }
+
+  /**
+   * Enable parse button and reset its state
+   */
+  enableParseButton() {
+    const btn = document.getElementById('btn-parse');
+    btn.disabled = false;
+    btn.textContent = '✓ Parse';
+    btn.classList.remove('error', 'warning', 'success');
   }
 
   /**

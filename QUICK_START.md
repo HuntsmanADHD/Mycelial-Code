@@ -12,17 +12,14 @@
 
 ✅ **All programs pass syntax validation** (820 tokens in ClawedCode alone)
 
-## Step 1: Open the Simulator
+## Step 1: Start the Dev Server
 
-Open this URL in your web browser:
-```
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+Run the following command in your terminal:
+```bash
+npm run dev
 ```
 
-Or copy this path to your browser's address bar:
-```
-/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
-```
+Then open http://localhost:3000 in your browser.
 
 ## Step 2: Load an Example
 
@@ -34,7 +31,7 @@ The simulator will load with a code editor on the left and an empty graph on the
 
 **Option B: Load the file manually**
 - Click "📂 Load File" button
-- Navigate to: `/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/examples/`
+- Navigate to the `examples/` directory
 - Select `clawed_code.mycelial`
 
 The code will appear in the editor on the left.
@@ -253,12 +250,12 @@ input_messages → Peer_A
 ## Files Location
 
 ```
-/home/lewey/Desktop/MyLanguage/
+Mycelial-Code/
 ├── 00-VISION/              # Philosophy and vision
 ├── 01-SPECIFICATION/       # Grammar and syntax specification
-├── 05-TOOLS/simulator/     # ← Main simulator (open index.html here)
-│   ├── index.html          # ← Start here
-│   ├── examples/           # ← All 6 programs
+├── 05-TOOLS/simulator/     # Main simulator
+│   ├── index.html          # Simulator UI
+│   ├── examples/           # All 6 programs
 │   └── src/                # Parser, analyzer, runtime, visualizer
 └── 07-EXAMPLES/            # Original example programs (read-only)
 ```
@@ -275,4 +272,4 @@ The simulator requires:
 
 **Ready to explore?**
 
-Open `file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html` now and start testing with ClawedCode!
+Run `npm run dev` and open http://localhost:3000 to start testing with ClawedCode!

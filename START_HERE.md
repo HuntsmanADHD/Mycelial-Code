@@ -20,12 +20,12 @@ A **bio-inspired distributed programming language** and web-based IDE that treat
 
 ### 🚀 Want to Test It Right Now?
 
-**Open this file in your browser:**
-```
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+**Start the dev server:**
+```bash
+npm run dev
 ```
 
-Then:
+Then open http://localhost:3000 in your browser and:
 1. Load `clawed_code.mycelial` from examples
 2. Click "Parse" to validate
 3. Click "Step" to execute one tidal cycle
@@ -108,7 +108,7 @@ Interactive Visualization
 
 **Main simulator location:**
 ```
-/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/
+05-TOOLS/simulator/
 ```
 
 **Key files:**
@@ -261,22 +261,22 @@ A: See [TEST_REPORT.md](TEST_REPORT.md) for comprehensive results.
 
 ---
 
-## One-Click Shortcuts
+## Quick Commands
 
-**Open the simulator in your browser:**
-```
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
-```
-
-**Run syntax validation (terminal):**
+**Start the dev server:**
 ```bash
-cd /home/lewey/Desktop/MyLanguage/05-TOOLS/simulator
-node verify-syntax.js
+npm run dev
+# Then open http://localhost:3000
+```
+
+**Run syntax validation:**
+```bash
+npm run verify
 ```
 
 **View test results:**
 ```
-See: /home/lewey/Desktop/MyLanguage/TEST_REPORT.md
+See: TEST_REPORT.md
 ```
 
 ---
@@ -340,7 +340,7 @@ See: /home/lewey/Desktop/MyLanguage/TEST_REPORT.md
 
 ---
 
-**Ready? [Open the simulator!](file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html)**
+**Ready? Run `npm run dev` and open http://localhost:3000!**
 
 Or start with [QUICK_START.md](QUICK_START.md) for detailed instructions.
 

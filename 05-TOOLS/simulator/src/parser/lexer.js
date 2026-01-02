@@ -31,8 +31,11 @@ class Lexer {
       'state', 'on', 'signal', 'emit', 'report', 'spawn', 'die',
       'socket', 'fruiting_body', 'topology', 'config',
       'if', 'else', 'where', 'rest', 'cycle',
-      'true', 'false',
-      // Type keywords
+      'true', 'false', 'as',
+    ]);
+
+    // Type keywords - these are returned as IDENTIFIER for parser compatibility
+    this.typeKeywords = new Set([
       'u32', 'i64', 'f64', 'string', 'binary', 'boolean',
       'vec', 'queue', 'map',
     ]);
@@ -167,6 +170,11 @@ class Lexer {
     // Check if it's a keyword
     if (this.keywords.has(ident)) {
       return new Token(ident.toUpperCase(), ident, startLine, startCol);
+    }
+
+    // Type keywords are returned as IDENTIFIER for parser compatibility
+    if (this.typeKeywords.has(ident)) {
+      return new Token('IDENTIFIER', ident, startLine, startCol);
     }
 
     return new Token('IDENTIFIER', ident, startLine, startCol);

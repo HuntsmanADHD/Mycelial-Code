@@ -37,7 +37,7 @@ The Mycelial Simulator is **fully built and operational**. All 6 example program
 **All simulator components are in place:**
 
 ```
-/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/
+05-TOOLS/simulator/
 ├── index.html                          [✅ Main UI]
 ├── styles/
 │   ├── main.css                        [✅ Base styling]
@@ -201,9 +201,10 @@ The Mycelial Simulator is **fully built and operational**. All 6 example program
 
 ### Browser-Based Interactive Testing
 
-1. **Open the simulator in a modern browser:**
-   ```
-   file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+1. **Start the dev server and open in browser:**
+   ```bash
+   npm run dev
+   # Then open http://localhost:3000
    ```
 
 2. **Load an example program:**

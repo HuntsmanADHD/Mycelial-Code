@@ -51,7 +51,7 @@ Complete IDE with:
 ## Project Structure
 
 ```
-/home/lewey/Desktop/MyLanguage/
+Mycelial-Code/
 │
 ├── 📋 DOCUMENTATION
 │   ├── INDEX.md                    ← Start here for navigation
@@ -214,14 +214,11 @@ TOTAL: 2,828 tokens across all programs
 
 ## How to Test (Step-by-Step)
 
-### 1. Open the Simulator
+### 1. Start the Dev Server
 
 ```bash
-# Open this in your web browser:
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
-
-# Or copy to address bar:
-/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+npm run dev
+# Then open http://localhost:3000
 ```
 
 ### 2. Load ClawedCode Example
@@ -465,21 +462,21 @@ EXECUTION_MODEL.md - Runtime semantics
 
 ### Syntax Verification (CLI)
 ```bash
-cd /home/lewey/Desktop/MyLanguage/05-TOOLS/simulator
-node verify-syntax.js
+npm run verify
 ```
 
 Result: All 6 programs pass ✅
 
 ### Interactive Testing (Browser)
-```
-Open in browser:
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+```bash
+npm run dev
+# Open http://localhost:3000
 
-Load example: clawed_code.mycelial
-Click: Parse
-Click: Step (or Play)
-Observe: Network graph renders and executes
+# Then:
+# Load example: clawed_code.mycelial
+# Click: Parse
+# Click: Step (or Play)
+# Observe: Network graph renders and executes
 ```
 
 ---
@@ -512,4 +509,4 @@ But the **core language and simulator are complete and tested!**
 
 ---
 
-**To Begin Testing:** Open `/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html` in your browser.
+**To Begin Testing:** Run `npm run dev` and open http://localhost:3000 in your browser.

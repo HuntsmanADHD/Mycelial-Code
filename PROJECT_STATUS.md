@@ -1,9 +1,8 @@
 # Mycelial Programming Language - Project Status
 ## Complete Build from Vision to Implementation
 
-**Date**: December 29, 2025  
-**Status**: Phase 1 Complete - MVP Ready  
-**Location**: `/home/lewey/Desktop/MyLanguage/`
+**Date**: December 29, 2025
+**Status**: Phase 1 Complete - MVP Ready
 
 ---
 
@@ -149,13 +148,10 @@ MyLanguage/
 
 ### Access the Simulator
 ```bash
-# Option 1: Open directly in browser
-file:///home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html
+# Start the dev server
+npm run dev
 
-# Option 2: Run local server
-cd /home/lewey/Desktop/MyLanguage/05-TOOLS/simulator
-python3 -m http.server 8000
-# Visit http://localhost:8000
+# Then open http://localhost:3000 in your browser
 ```
 
 ### Test a Program
@@ -345,19 +341,19 @@ REST Phase:
 ## 📍 Key Files to Explore
 
 **To understand the paradigm:**
-- `/home/lewey/Desktop/MyLanguage/00-VISION/MYCELIAL_MANIFESTO.md`
+- `00-VISION/MYCELIAL_MANIFESTO.md`
 
 **To see the design:**
-- `/home/lewey/Desktop/MyLanguage/01-SPECIFICATION/SYNTAX_DESIGN.md`
+- `01-SPECIFICATION/SYNTAX_DESIGN.md`
 
 **To run the simulator:**
-- `/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/index.html`
+- `npm run dev` then open http://localhost:3000
 
 **To see working examples:**
-- `/home/lewey/Desktop/MyLanguage/07-EXAMPLES/hello_world.mycelial`
+- `05-TOOLS/simulator/examples/hello_world.mycelial`
 
 **To understand the code:**
-- `/home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/src/parser/parser.js`
+- `05-TOOLS/simulator/src/parser/parser.js`
 
 ---
 
