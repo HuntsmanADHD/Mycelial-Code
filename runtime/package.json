@@ -1,0 +1,20 @@
+{
+  "name": "mycelial-runtime",
+  "version": "0.1.0",
+  "description": "Mycelial Runtime - Phase 1: Foundational Components",
+  "main": "src/orchestration-parser.js",
+  "scripts": {
+    "test": "node src/test-runtime.js"
+  },
+  "keywords": [
+    "mycelial",
+    "runtime",
+    "agent",
+    "orchestration"
+  ],
+  "author": "Claude Opus 4.5",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

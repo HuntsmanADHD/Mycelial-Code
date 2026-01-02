@@ -1,0 +1,73 @@
+
+network SimpleCompiler {
+  frequencies {
+    compile_request {
+      source_path: string
+      output_path: string
+      timestamp: u64
+    }
+
+    lex_tokens {
+      tokens: vec<string>
+    }
+
+    parse_tree {
+      ast: string
+    }
+
+    compiled_binary {
+      elf_data: binary
+    }
+  }
+
+  types {
+    enum TokenType {
+      KEYWORD,
+      IDENTIFIER,
+      NUMBER
+    }
+  }
+
+  hyphae {
+    hyphal Lexer {
+      state {
+        position: u32
+      }
+
+      on signal(compile_request, req) {
+        emit lex_tokens { tokens: ["token1", "token2"] }
+      }
+    }
+
+    hyphal Parser {
+      state {
+        depth: u32
+      }
+
+      on signal(lex_tokens, tokens) {
+        emit parse_tree { ast: "program" }
+      }
+    }
+
+    hyphal CodeGen {
+      state {
+        output_binary: binary
+        compiled_elf: binary
+      }
+
+      on signal(parse_tree, tree) {
+        state.compiled_elf = "ELF_PLACEHOLDER"
+        emit compiled_binary { elf_data: state.compiled_elf }
+      }
+    }
+  }
+
+  topology {
+    spawn Lexer as lexer
+    spawn Parser as parser
+    spawn CodeGen as codegen
+
+    socket lexer -> parser (frequency: lex_tokens)
+    socket parser -> codegen (frequency: parse_tree)
+  }
+}
