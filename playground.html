@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mycelial Playground</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- CodeMirror CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/dracula.min.css">
+
+    <!-- Custom Styles -->
+    <link rel="stylesheet" href="css/playground.css">
+    <link rel="stylesheet" href="css/dark-mode.css">
+</head>
+<body class="playground-body">
+    <!-- Top Bar -->
+    <div class="playground-header">
+        <div class="header-left">
+            <a href="index.html" class="logo-link">
+                <span class="logo-icon">🌿</span>
+                <span class="logo-text">MycelialCode</span>
+            </a>
+            <a href="index.html" class="btn-back">← Landing</a>
+        </div>
+        <div class="header-right">
+            <button id="btn-share" class="btn btn-secondary" title="Share this code">
+                <span>🔗</span>
+                <span class="btn-text">Share</span>
+            </button>
+            <button id="btn-help" class="btn btn-secondary" title="Help">
+                <span>?</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Playground Layout -->
+    <div class="playground-container">
+        <!-- Left Panel: Code Editor -->
+        <div class="editor-panel">
+            <div class="editor-header">
+                <div class="editor-tabs">
+                    <div class="editor-tab active">
+                        <span class="tab-icon">📝</span>
+                        <span>Editor</span>
+                    </div>
+                </div>
+                <div class="editor-info">
+                    <span id="editor-status" class="status-indicator">Ready</span>
+                </div>
+            </div>
+
+            <div class="editor-container">
+                <textarea id="code-editor"></textarea>
+            </div>
+
+            <div class="editor-footer">
+                <div class="footer-left">
+                    <span id="cursor-position">Ln 1, Col 1</span>
+                    <span class="separator">|</span>
+                    <select id="example-selector" class="select-input">
+                        <option value="">Load Example...</option>
+                    </select>
+                </div>
+                <div class="footer-right">
+                    <button id="btn-reset" class="btn btn-secondary">↻ Reset</button>
+                    <button id="btn-compile" class="btn btn-primary">▶ Compile</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Output Tabs -->
+        <div class="output-panel">
+            <div class="output-header">
+                <div class="output-tabs">
+                    <button class="output-tab active" data-tab="tokens">Tokens</button>
+                    <button class="output-tab" data-tab="ast">AST</button>
+                    <button class="output-tab" data-tab="assembly">Assembly</button>
+                    <button class="output-tab" data-tab="binary">Binary</button>
+                    <button class="output-tab" data-tab="console">Console</button>
+                </div>
+                <button id="btn-copy-output" class="btn btn-icon" title="Copy output">
+                    📋
+                </button>
+            </div>
+
+            <div class="output-content">
+                <!-- Tokens Tab -->
+                <div id="tab-tokens" class="tab-content active">
+                    <div class="output-table">
+                        <table id="tokens-table">
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Value</th>
+                                    <th>Line:Col</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tokens-body">
+                                <tr class="empty-state">
+                                    <td colspan="3">Click "Compile" to see tokens</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- AST Tab -->
+                <div id="tab-ast" class="tab-content">
+                    <pre id="ast-output" class="output-pre">
+<span class="empty-state">Click "Compile" to see AST</span></pre>
+                </div>
+
+                <!-- Assembly Tab -->
+                <div id="tab-assembly" class="tab-content">
+                    <pre id="assembly-output" class="output-pre">
+<span class="empty-state">Click "Compile" to see assembly</span></pre>
+                </div>
+
+                <!-- Binary Tab -->
+                <div id="tab-binary" class="tab-content">
+                    <pre id="binary-output" class="output-pre">
+<span class="empty-state">Click "Compile" to see binary info</span></pre>
+                </div>
+
+                <!-- Console Tab -->
+                <div id="tab-console" class="tab-content">
+                    <div id="console-output" class="console-content">
+                        <div class="console-line welcome">Welcome to Mycelial Playground!</div>
+                        <div class="console-line">Type your code and click "Compile" to begin.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="output-footer">
+                <div class="footer-left">
+                    <span id="compile-status">Not compiled</span>
+                </div>
+                <div class="footer-right">
+                    <button id="btn-prev-tab" class="btn btn-icon" title="Previous tab">◀</button>
+                    <button id="btn-next-tab" class="btn btn-icon" title="Next tab">▶</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div id="help-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Mycelial Playground Help</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <h3>Keyboard Shortcuts</h3>
+                <ul class="shortcuts-list">
+                    <li><kbd>Ctrl/Cmd</kbd> + <kbd>Enter</kbd> - Compile</li>
+                    <li><kbd>Ctrl/Cmd</kbd> + <kbd>S</kbd> - Save (local storage)</li>
+                    <li><kbd>Ctrl/Cmd</kbd> + <kbd>F</kbd> - Find in editor</li>
+                    <li><kbd>Ctrl/Cmd</kbd> + <kbd>Z</kbd> - Undo</li>
+                    <li><kbd>Ctrl/Cmd</kbd> + <kbd>Y</kbd> - Redo</li>
+                </ul>
+
+                <h3>Output Tabs</h3>
+                <ul>
+                    <li><strong>Tokens:</strong> Lexical analysis - see how code is tokenized</li>
+                    <li><strong>AST:</strong> Abstract Syntax Tree - parse tree structure</li>
+                    <li><strong>Assembly:</strong> Generated x86-64 assembly code</li>
+                    <li><strong>Binary:</strong> Binary file information and sections</li>
+                    <li><strong>Console:</strong> Compilation messages and errors</li>
+                </ul>
+
+                <h3>Examples</h3>
+                <p>Load example programs from the dropdown to learn Mycelial syntax and patterns.</p>
+
+                <h3>Sharing</h3>
+                <p>Click the Share button to get a URL with your code embedded. Share it with anyone!</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- CodeMirror -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/clike/clike.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/matchbrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/closebrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/search/search.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/search/searchcursor.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/dialog/dialog.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/dialog/dialog.css"></script>
+
+    <!-- Custom Scripts -->
+    <script src="js/editor.js"></script>
+    <script src="js/playground.js"></script>
+    <script src="js/output.js"></script>
+    <script src="js/examples.js"></script>
+</body>
+</html>

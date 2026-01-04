@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Mycelial - A bio-inspired programming language where agents collaborate, communicate, and emerge with intelligence">
+    <meta name="keywords" content="mycelial, programming language, agent-based, distributed systems, bio-inspired">
+    <title>Mycelial - Think in Networks, Not Sequences</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/dark-mode.css">
+    <link rel="stylesheet" href="css/animations.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav-bar">
+        <div class="nav-content">
+            <div class="nav-left">
+                <a href="/" class="logo-link">
+                    <span class="logo-icon">🌿</span>
+                    <span class="logo-text">MycelialCode</span>
+                </a>
+            </div>
+            <div class="nav-right">
+                <a href="#playground" class="nav-link">Try →</a>
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler/tree/main/docs" class="nav-link" target="_blank">Docs</a>
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler" class="nav-link" target="_blank">GitHub</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-background">
+            <canvas id="network-canvas"></canvas>
+        </div>
+        <div class="hero-content">
+            <h1 class="hero-title">Think in Networks,<br>Not Sequences</h1>
+            <p class="hero-subtitle">A bio-inspired programming language where agents collaborate,<br>communicate, and emerge with intelligence</p>
+            <div class="hero-cta">
+                <a href="#playground" class="btn btn-primary btn-large">Try It Now</a>
+                <a href="#what-is" class="btn btn-secondary btn-large">Learn More</a>
+            </div>
+        </div>
+        <div class="scroll-indicator">
+            <span>Scroll to explore</span>
+            <div class="scroll-arrow">↓</div>
+        </div>
+    </section>
+
+    <!-- What is Mycelial Section -->
+    <section id="what-is" class="section section-dark">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">What is Mycelial?</h2>
+                <p class="section-subtitle">Forget sequential programming. You're thinking in networks now. 🌿</p>
+            </div>
+
+            <div class="comparison-grid">
+                <div class="comparison-card">
+                    <h3>Instead of...</h3>
+                    <ul class="comparison-list negative">
+                        <li>Sequential code (step 1, 2, 3...)</li>
+                        <li>Centralized control</li>
+                        <li>Complex coordination</li>
+                        <li>Brittle dependencies</li>
+                    </ul>
+                </div>
+                <div class="comparison-card">
+                    <h3>You write...</h3>
+                    <ul class="comparison-list positive">
+                        <li>Agents that listen for signals</li>
+                        <li>Distributed decision-making</li>
+                        <li>Emergent behavior</li>
+                        <li>Self-organizing systems</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="code-example">
+                <div class="code-header">
+                    <span class="code-title">hello_world.mycelial</span>
+                    <button class="btn-copy" data-copy="hello-code">Copy</button>
+                </div>
+                <pre id="hello-code"><code class="mycelial">network HelloWorld {
+  frequencies {
+    greeting { name: string }
+    response { message: string }
+  }
+
+  hyphae {
+    hyphal greeter {
+      on signal(greeting, g) {
+        emit response {
+          message: format("Hello, {}!", g.name)
+        }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+    spawn greeter as G1
+    socket input -> G1 (frequency: greeting)
+    socket G1 -> output (frequency: response)
+  }
+}</code></pre>
+            </div>
+
+            <div class="benefits-grid">
+                <div class="benefit-card">
+                    <div class="benefit-icon">🌿</div>
+                    <h3>Bio-Inspired</h3>
+                    <p>Modeled after how nature actually works - decentralized, resilient, adaptive</p>
+                </div>
+                <div class="benefit-card">
+                    <div class="benefit-icon">🚀</div>
+                    <h3>Elegant</h3>
+                    <p>Less code, more clarity. Express complex systems with simple, declarative syntax</p>
+                </div>
+                <div class="benefit-card">
+                    <div class="benefit-icon">🧠</div>
+                    <h3>Powerful</h3>
+                    <p>Proves agent-based systems scale. From hello world to distributed processing</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Interactive Demo Section -->
+    <section class="section section-demo">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">See It In Action</h2>
+                <p class="section-subtitle">Watch how signals flow through a Mycelial network</p>
+            </div>
+
+            <div class="demo-container">
+                <div class="demo-visual">
+                    <svg id="demo-svg" viewBox="0 0 800 400"></svg>
+                </div>
+                <div class="demo-controls">
+                    <button id="demo-play" class="btn btn-primary">▶ Send Signal</button>
+                    <button id="demo-reset" class="btn btn-secondary">↻ Reset</button>
+                </div>
+                <div class="demo-explanation">
+                    <p><strong>What's happening:</strong></p>
+                    <ol id="demo-steps">
+                        <li>Signal <code>greeting(name="World")</code> arrives at input</li>
+                        <li>Agent <code>greeter</code> receives the signal</li>
+                        <li>Agent processes: <code>format("Hello, {}!", g.name)</code></li>
+                        <li>Agent emits <code>response(message="Hello, World!")</code></li>
+                        <li>Output receives the result</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Playground Section -->
+    <section id="playground" class="section section-dark">
+        <div class="container-full">
+            <div class="section-header">
+                <h2 class="section-title">Try It Now</h2>
+                <p class="section-subtitle">Write, compile, and explore Mycelial code in your browser</p>
+            </div>
+
+            <div class="playground-embed">
+                <iframe src="playground.html" class="playground-frame" title="Mycelial Playground"></iframe>
+            </div>
+            <div class="playground-link">
+                <a href="playground.html" class="btn btn-primary" target="_blank">Open Full Playground →</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Examples Gallery -->
+    <section class="section section-examples">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Example Programs</h2>
+                <p class="section-subtitle">Learn from these patterns and build your own</p>
+            </div>
+
+            <div class="examples-grid" id="examples-grid">
+                <!-- Loaded dynamically from examples.json -->
+            </div>
+        </div>
+    </section>
+
+    <!-- Why Mycelial Section -->
+    <section class="section section-dark">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Why Mycelial?</h2>
+                <p class="section-subtitle">Built for the future of distributed computing</p>
+            </div>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <h3>🎯 Direct Machine Code</h3>
+                    <p>Compiles to native x86-64 and ARM64. No VM, no runtime overhead</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔄 Self-Hosting</h3>
+                    <p>The compiler is written in Mycelial. Bootstrapped and proven</p>
+                </div>
+                <div class="feature-card">
+                    <h3>📦 Zero Dependencies</h3>
+                    <p>Pure agent-based architecture. No external libraries required</p>
+                </div>
+                <div class="feature-card">
+                    <h3>⏱️ Deterministic Execution</h3>
+                    <p>Tidal cycles ensure predictable, reproducible behavior</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔒 Type-Safe Signals</h3>
+                    <p>Compile-time type checking prevents signal mismatch errors</p>
+                </div>
+                <div class="feature-card">
+                    <h3>✅ Proven Architecture</h3>
+                    <p>Real compiler, real programs, real results</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Documentation Links -->
+    <section class="section section-docs">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Documentation</h2>
+                <p class="section-subtitle">Everything you need to master Mycelial</p>
+            </div>
+
+            <div class="docs-grid">
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler/blob/main/docs/getting-started.md" class="doc-card" target="_blank">
+                    <div class="doc-icon">📖</div>
+                    <h3>Getting Started</h3>
+                    <p>Your first Mycelial program in 5 minutes</p>
+                </a>
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler/blob/main/docs/language-spec.md" class="doc-card" target="_blank">
+                    <div class="doc-icon">📋</div>
+                    <h3>Language Specification</h3>
+                    <p>Complete syntax and semantics reference</p>
+                </a>
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler/blob/main/docs/architecture/compiler-as-agents.md" class="doc-card" target="_blank">
+                    <div class="doc-icon">🏗️</div>
+                    <h3>Architecture Guide</h3>
+                    <p>How the compiler works under the hood</p>
+                </a>
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler/tree/main/tests" class="doc-card" target="_blank">
+                    <div class="doc-icon">💡</div>
+                    <h3>Examples & Tutorials</h3>
+                    <p>Learn from real-world programs</p>
+                </a>
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler/blob/main/docs/api-reference.md" class="doc-card" target="_blank">
+                    <div class="doc-icon">🔧</div>
+                    <h3>API Reference</h3>
+                    <p>Built-in functions and types</p>
+                </a>
+                <a href="https://github.com/huntsmanadhd/mycelial-compiler" class="doc-card" target="_blank">
+                    <div class="doc-icon">💻</div>
+                    <h3>GitHub Repository</h3>
+                    <p>Source code, issues, contributions</p>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">🌿</span>
+                    <span class="logo-text">MycelialCode</span>
+                </div>
+                <div class="footer-links">
+                    <a href="https://github.com/huntsmanadhd/mycelial-compiler" target="_blank">GitHub</a>
+                    <a href="https://github.com/huntsmanadhd/mycelial-compiler/tree/main/docs" target="_blank">Docs</a>
+                    <a href="https://twitter.com/mycelialcode" target="_blank">Twitter</a>
+                    <a href="mailto:hello@mycelialcode.com">Email</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>Built with 🧬 by the Mycelial Team</p>
+                <p>© 2026 Mycelial. <a href="https://github.com/huntsmanadhd/mycelial-compiler/blob/main/LICENSE" target="_blank">MIT License</a></p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="js/main.js"></script>
+    <script src="js/network-animation.js"></script>
+    <script src="js/demo.js"></script>
+    <script src="js/examples.js"></script>
+</body>
+</html>

@@ -1,0 +1,282 @@
+# Code Generator Test Harness
+#
+# Purpose: Validate x86_codegen agent with hello_world LIR input
+# This test simulates IR Generator output and verifies Code Gen produces correct x86-64
+#
+# Test case: greeter_rule_0 from hello_world.mycelial
+#
+# LIR Input (from IR spec Section 10.1):
+#   function greeter_rule_0(state_ptr: *AgentState, signal_ptr: *Signal) -> void
+#   - bitcast, get_field_addr, load, const, call, store, ret
+#
+# Expected x86-64 Output:
+#   - Proper prologue/epilogue
+#   - System V AMD64 calling convention
+#   - Correct register allocation
+
+network CodeGenTest {
+
+  # Import the Code Generator network
+  import x86_codegen
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TEST SIGNAL DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  frequencies {
+    # Test control signals
+    run_test {
+      test_name: string
+    }
+
+    test_result {
+      test_name: string
+      passed: boolean
+      message: string
+    }
+
+    # Expected assembly output (for verification)
+    expected_asm {
+      function_name: string
+      instructions: vec<string>
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TEST DATA - greeter_rule_0 LIR
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # LIR instructions for greeter_rule_0
+  # From: ir-specification.md Section 10.1
+  constants {
+    GREETER_RULE_LIR = [
+      # bb0:
+      IRInstruction { op: BITCAST, dst: "%g", src1: "%signal_ptr", src2: "*Signal_greeting", type_size: 8, label: "bb0" },
+      IRInstruction { op: GET_FIELD_ADDR, dst: "%g_name_ptr", src1: "%g", src2: "4", type_size: 8, label: "" },
+      IRInstruction { op: LOAD, dst: "%g_name", src1: "%g_name_ptr", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: CONST, dst: "%template", src1: ".L_template", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: CALL, dst: "%formatted", src1: "runtime_format_string", src2: "%template,%g_name", type_size: 8, label: "" },
+      IRInstruction { op: CONST, dst: "%resp_size", src1: "16", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: CALL, dst: "%resp_ptr", src1: "runtime_alloc_signal", src2: "2,%resp_size", type_size: 8, label: "" },
+      IRInstruction { op: GET_FIELD_ADDR, dst: "%freq_id_ptr", src1: "%resp_ptr", src2: "0", type_size: 8, label: "" },
+      IRInstruction { op: CONST, dst: "%freq_id_val", src1: "2", src2: "", type_size: 4, label: "" },
+      IRInstruction { op: STORE, dst: "%freq_id_ptr", src1: "%freq_id_val", src2: "", type_size: 4, label: "" },
+      IRInstruction { op: GET_FIELD_ADDR, dst: "%msg_ptr", src1: "%resp_ptr", src2: "8", type_size: 8, label: "" },
+      IRInstruction { op: STORE, dst: "%msg_ptr", src1: "%formatted", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: CALL, dst: "", src1: "runtime_emit_signal", src2: "%state_ptr,%resp_ptr", type_size: 0, label: "" },
+      IRInstruction { op: RET, dst: "", src1: "", src2: "", type_size: 0, label: "" }
+    ]
+
+    GREETER_PARAMS = [
+      Param { name: "%state_ptr", param_type: PTR },
+      Param { name: "%signal_ptr", param_type: PTR }
+    ]
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TEST DRIVER AGENT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  hyphae {
+    hyphal test_driver {
+      frequency tidal_cycle
+
+      state {
+        asm_output: vec<AsmInstruction>
+        test_running: boolean
+        expected_patterns: vec<string>
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # TEST EXECUTION
+      # ─────────────────────────────────────────────────────────────────────────
+
+      on signal(run_test, test) {
+        if test.test_name == "greeter_rule_0" {
+          run_greeter_test()
+        }
+      }
+
+      rule run_greeter_test() {
+        state.test_running = true
+        vec_clear(state.asm_output)
+
+        # Set up expected patterns
+        state.expected_patterns = vec_from(
+          "pushq %rbp",
+          "movq %rsp, %rbp",
+          "subq $",
+          "leaq",
+          "call runtime_format_string",
+          "call runtime_alloc_signal",
+          "call runtime_emit_signal",
+          "movq %rbp, %rsp",
+          "popq %rbp",
+          "ret"
+        )
+
+        # Send function start
+        emit ir_function_start {
+          name: "greeter_rule_0",
+          params: GREETER_PARAMS,
+          return_type: VOID
+        }
+
+        # Send each LIR instruction
+        for lir in GREETER_RULE_LIR {
+          emit ir_node {
+            instruction: lir
+          }
+        }
+
+        # Send function end
+        emit ir_function_end {
+          name: "greeter_rule_0"
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # CAPTURE OUTPUT
+      # ─────────────────────────────────────────────────────────────────────────
+
+      on signal(asm_instruction, asm) {
+        if state.test_running {
+          vec_push(state.asm_output, asm)
+        }
+      }
+
+      on signal(codegen_complete, done) {
+        if state.test_running {
+          verify_output()
+          state.test_running = false
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # VERIFICATION
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule verify_output() {
+        let all_passed = true
+        let messages: vec<string> = vec_new()
+
+        # Build assembly text for pattern matching
+        let asm_text = build_asm_text(state.asm_output)
+
+        # Check each expected pattern
+        for pattern in state.expected_patterns {
+          if !string_contains(asm_text, pattern) {
+            all_passed = false
+            vec_push(messages, format("Missing: {}", pattern))
+          }
+        }
+
+        # Verify instruction count
+        if vec_len(state.asm_output) < 10 {
+          all_passed = false
+          vec_push(messages, format("Too few instructions: {}", vec_len(state.asm_output)))
+        }
+
+        # Verify function label present
+        let has_func_label = false
+        for asm in state.asm_output {
+          if asm.label == "greeter_rule_0" {
+            has_func_label = true
+            break
+          }
+        }
+        if !has_func_label {
+          all_passed = false
+          vec_push(messages, "Missing function label")
+        }
+
+        # Emit result
+        emit test_result {
+          test_name: "greeter_rule_0",
+          passed: all_passed,
+          message: if all_passed {
+            format("PASSED - {} instructions generated", vec_len(state.asm_output))
+          } else {
+            string_join(messages, "; ")
+          }
+        }
+      }
+
+      rule build_asm_text(instructions: vec<AsmInstruction>) -> string {
+        let lines: vec<string> = vec_new()
+        for asm in instructions {
+          if asm.label != "" {
+            vec_push(lines, format("{}:", asm.label))
+          }
+          if asm.mnemonic != "" {
+            let operands_str = string_join(asm.operands, ", ")
+            vec_push(lines, format("    {} {}", asm.mnemonic, operands_str))
+          }
+        }
+        return string_join(lines, "\n")
+      }
+    }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TEST REPORTER
+    # ─────────────────────────────────────────────────────────────────────────
+
+    hyphal test_reporter {
+      frequency tidal_cycle
+
+      on signal(test_result, result) {
+        if result.passed {
+          log_info(format("✅ TEST PASSED: {} - {}", result.test_name, result.message))
+        } else {
+          log_error(format("❌ TEST FAILED: {} - {}", result.test_name, result.message))
+        }
+      }
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TOPOLOGY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  topology {
+    # Import code generator
+    spawn x86_codegen::CodeGen as CodeGen
+
+    # Test agents
+    spawn test_driver as Driver
+    spawn test_reporter as Reporter
+
+    # Test control
+    fruiting_body test_input
+    fruiting_body test_output
+
+    # Wire up test driver to code generator
+    socket Driver -> CodeGen (frequency: ir_node)
+    socket Driver -> CodeGen (frequency: ir_function_start)
+    socket Driver -> CodeGen (frequency: ir_function_end)
+
+    # Wire code generator output back to driver for verification
+    socket CodeGen -> Driver (frequency: asm_instruction)
+    socket CodeGen -> Driver (frequency: codegen_complete)
+
+    # Test result output
+    socket Driver -> Reporter (frequency: test_result)
+    socket Reporter -> test_output (frequency: test_result)
+
+    # External test control
+    socket test_input -> Driver (frequency: run_test)
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TEST RUNNER
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# To run the test:
+#   1. Instantiate CodeGenTest network
+#   2. Send: run_test(test_name="greeter_rule_0")
+#   3. Observe: test_result signal with pass/fail status
+#
+# Expected output:
+#   ✅ TEST PASSED: greeter_rule_0 - 25 instructions generated
+#

@@ -1,0 +1,1651 @@
+# IR Generator Agent
+#
+# Owner: Sonnet (Claude Sonnet 4.5)
+# Purpose: Transform AST into Intermediate Representation (HIR → LIR)
+# Input: ast_complete signals from Parser Agent
+# Output: lir_function signals to Code Gen Agent
+#
+# Implementation: Two-level IR lowering (AST → HIR → LIR)
+#
+# Reference: /home/lewey/Desktop/mycelial-compiler/docs/architecture/ir-specification.md
+
+network ir_generator {
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # FREQUENCY DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  frequencies {
+    # Input signals (from Parser)
+    ast_complete {
+      program: Program
+    }
+
+    # Output signals (to Code Gen)
+    lir_function {
+      name: string
+      params: vec<Parameter>
+      return_type: LIRType
+      basic_blocks: vec<BasicBlock>
+    }
+
+    lir_struct {
+      name: string
+      fields: vec<StructField>
+      total_size: u32
+      alignment: u32
+    }
+
+    ir_complete {
+      function_count: u32
+      struct_count: u32
+    }
+
+    ir_error {
+      message: string
+      location: SourceLocation
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TYPE DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  types {
+    # ─────────────────────────────────────────────────────────────────────────
+    # Import AST types from Parser
+    # ─────────────────────────────────────────────────────────────────────────
+
+    struct SourceLocation {
+      line: u32
+      column: u32
+    }
+
+    # Parser AST types (simplified for what we need)
+    struct Program {
+      items: vec<ProgramItem>
+      location: SourceLocation
+    }
+
+    enum ProgramItem {
+      Frequency(FrequencyDef),
+      Network(NetworkDef),
+      Import(ImportDef)
+    }
+
+    struct FrequencyDef {
+      name: string
+      fields: vec<FieldDef>
+      location: SourceLocation
+    }
+
+    struct FieldDef {
+      name: string
+      field_type: TypeRef
+      location: SourceLocation
+    }
+
+    struct NetworkDef {
+      name: string
+      frequencies: vec<FrequencyDef>
+      types: vec<TypeDef>
+      constants: vec<ConstantDef>
+      hyphae: vec<HyphalDef>
+      topology: vec<TopologyItem>
+      config: vec<ConfigItem>
+      location: SourceLocation
+    }
+
+    struct HyphalDef {
+      name: string
+      frequency_ref: string
+      state: StateBlock
+      rules: vec<Rule>
+      location: SourceLocation
+    }
+
+    struct StateBlock {
+      fields: vec<StateField>
+      location: SourceLocation
+    }
+
+    struct StateField {
+      name: string
+      field_type: TypeRef
+      init_value: Expression
+      location: SourceLocation
+    }
+
+    struct Rule {
+      trigger: RuleTrigger
+      guard: Expression
+      body: vec<Statement>
+      location: SourceLocation
+    }
+
+    enum RuleTrigger {
+      Signal(SignalMatch),
+      Rest,
+      Cycle(u32)
+    }
+
+    struct SignalMatch {
+      frequency: string
+      binding: string
+      location: SourceLocation
+    }
+
+    enum Statement {
+      Let(LetStatement),
+      Assignment(AssignmentStatement),
+      Conditional(ConditionalStatement),
+      Emit(EmitStatement),
+      Report(ReportStatement),
+      Die(DieStatement),
+      Expression(ExpressionStatement)
+    }
+
+    struct LetStatement {
+      name: string
+      type_annotation: TypeRef
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct AssignmentStatement {
+      target: AssignmentTarget
+      value: Expression
+      location: SourceLocation
+    }
+
+    enum AssignmentTarget {
+      Variable(string),
+      StateField(string),
+      FieldAccess(Expression, string)
+    }
+
+    struct ConditionalStatement {
+      condition: Expression
+      then_body: vec<Statement>
+      else_body: vec<Statement>
+      location: SourceLocation
+    }
+
+    struct EmitStatement {
+      frequency: string
+      fields: vec<FieldInit>
+      location: SourceLocation
+    }
+
+    struct FieldInit {
+      name: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct ReportStatement {
+      metric: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct DieStatement {
+      location: SourceLocation
+    }
+
+    struct ExpressionStatement {
+      expression: Expression
+      location: SourceLocation
+    }
+
+    enum Expression {
+      Literal(LiteralExpr),
+      Identifier(IdentifierExpr),
+      BinaryOp(BinaryOpExpr),
+      UnaryOp(UnaryOpExpr),
+      FieldAccess(FieldAccessExpr),
+      Call(CallExpr),
+      StateAccess(StateAccessExpr),
+      SignalAccess(SignalAccessExpr),
+      Grouped(GroupedExpr),
+      None
+    }
+
+    struct LiteralExpr {
+      value: Literal
+      location: SourceLocation
+    }
+
+    struct IdentifierExpr {
+      name: string
+      location: SourceLocation
+    }
+
+    struct BinaryOpExpr {
+      op: BinaryOperator
+      left: Expression
+      right: Expression
+      location: SourceLocation
+    }
+
+    enum BinaryOperator {
+      Add, Sub, Mul, Div, Mod,
+      Eq, Ne, Lt, Gt, Le, Ge,
+      And, Or
+    }
+
+    struct UnaryOpExpr {
+      op: UnaryOperator
+      operand: Expression
+      location: SourceLocation
+    }
+
+    enum UnaryOperator {
+      Not, Neg, Pos
+    }
+
+    struct FieldAccessExpr {
+      object: Expression
+      field: string
+      location: SourceLocation
+    }
+
+    struct CallExpr {
+      name: string
+      args: vec<Expression>
+      location: SourceLocation
+    }
+
+    struct StateAccessExpr {
+      field: string
+      location: SourceLocation
+    }
+
+    struct SignalAccessExpr {
+      binding: string
+      field: string
+      location: SourceLocation
+    }
+
+    struct GroupedExpr {
+      inner: Expression
+      location: SourceLocation
+    }
+
+    enum Literal {
+      Number(i64),
+      Float(f64),
+      String(string),
+      Bool(boolean)
+    }
+
+    enum TypeRef {
+      Primitive(PrimitiveType),
+      Vec(TypeRef),
+      Queue(TypeRef),
+      Map(TypeRef, TypeRef),
+      Custom(string),
+      None
+    }
+
+    enum PrimitiveType {
+      U8, U16, U32, U64,
+      I8, I16, I32, I64,
+      F32, F64,
+      Boolean, String, Binary
+    }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # LIR Type System
+    # ─────────────────────────────────────────────────────────────────────────
+
+    enum LIRType {
+      I8, I16, I32, I64,
+      F32, F64,
+      Ptr,
+      Void
+    }
+
+    struct Parameter {
+      name: string
+      param_type: LIRType
+    }
+
+    struct BasicBlock {
+      label: string
+      instructions: vec<Instruction>
+      terminator: Terminator
+    }
+
+    enum Instruction {
+      Move(MoveInst),
+      Load(LoadInst),
+      Store(StoreInst),
+      LoadField(LoadFieldInst),
+      StoreField(StoreFieldInst),
+      Add(BinaryInst),
+      Sub(BinaryInst),
+      Mul(BinaryInst),
+      Div(BinaryInst),
+      Mod(BinaryInst),
+      And(BinaryInst),
+      Or(BinaryInst),
+      Xor(BinaryInst),
+      Not(UnaryInst),
+      Neg(UnaryInst),
+      CmpEq(CompareInst),
+      CmpNe(CompareInst),
+      CmpLt(CompareInst),
+      CmpLe(CompareInst),
+      CmpGt(CompareInst),
+      CmpGe(CompareInst),
+      Call(CallInst),
+      Const(ConstInst),
+      GetFieldAddr(GetFieldAddrInst),
+      Alloc(AllocInst)
+    }
+
+    struct MoveInst {
+      dst: string
+      src: string
+    }
+
+    struct LoadInst {
+      dst: string
+      addr: string
+    }
+
+    struct StoreInst {
+      addr: string
+      src: string
+    }
+
+    struct LoadFieldInst {
+      dst: string
+      object: string
+      offset: u32
+    }
+
+    struct StoreFieldInst {
+      object: string
+      offset: u32
+      src: string
+    }
+
+    struct BinaryInst {
+      dst: string
+      lhs: string
+      rhs: string
+    }
+
+    struct UnaryInst {
+      dst: string
+      operand: string
+    }
+
+    struct CompareInst {
+      dst: string
+      lhs: string
+      rhs: string
+    }
+
+    struct CallInst {
+      dst: string
+      func: string
+      args: vec<string>
+    }
+
+    struct ConstInst {
+      dst: string
+      value: ConstValue
+      const_type: LIRType
+    }
+
+    enum ConstValue {
+      Int(i64),
+      Float(f64),
+      String(string),
+      Bool(boolean)
+    }
+
+    struct GetFieldAddrInst {
+      dst: string
+      object: string
+      offset: u32
+    }
+
+    struct AllocInst {
+      dst: string
+      size: u32
+    }
+
+    enum Terminator {
+      Jump(JumpTerm),
+      Branch(BranchTerm),
+      Return(ReturnTerm)
+    }
+
+    struct JumpTerm {
+      target: string
+    }
+
+    struct BranchTerm {
+      condition: string
+      true_label: string
+      false_label: string
+    }
+
+    struct ReturnTerm {
+      value: string
+    }
+
+    struct StructField {
+      name: string
+      offset: u32
+      size: u32
+      field_type: LIRType
+    }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # IR Generator Internal State
+    # ─────────────────────────────────────────────────────────────────────────
+
+    struct IRGenContext {
+      current_function: string
+      current_hyphal: string
+      current_trigger_frequency: string
+      temp_counter: u32
+      label_counter: u32
+      frequency_map: map<string, u32>
+      struct_layouts: map<string, StructLayout>
+      local_vars: map<string, string>
+    }
+
+    struct StructLayout {
+      fields: vec<FieldLayout>
+      total_size: u32
+      alignment: u32
+    }
+
+    struct FieldLayout {
+      name: string
+      offset: u32
+      size: u32
+      field_type: LIRType
+    }
+
+    struct TypeDef {
+      name: string
+      type_kind: TypeDefKind
+      location: SourceLocation
+    }
+
+    enum TypeDefKind {
+      Struct(vec<FieldDef>),
+      Enum(vec<EnumVariant>)
+    }
+
+    struct EnumVariant {
+      name: string
+      fields: vec<FieldDef>
+      location: SourceLocation
+    }
+
+    struct ConstantDef {
+      name: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct ConfigItem {
+      key: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct ImportDef {
+      path: string
+      location: SourceLocation
+    }
+
+    enum TopologyItem {
+      Spawn(SpawnDef),
+      Socket(SocketDef),
+      FruitingBody(FruitingBodyDef)
+    }
+
+    struct SpawnDef {
+      hyphal: string
+      instance: string
+      location: SourceLocation
+    }
+
+    struct SocketDef {
+      from: string
+      to: string
+      frequency: string
+      location: SourceLocation
+    }
+
+    struct FruitingBodyDef {
+      name: string
+      location: SourceLocation
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IR GENERATOR AGENT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  hyphae {
+    hyphal ir_generator {
+      state {
+        # Input
+        program: Program
+
+        # Context
+        context: IRGenContext
+
+        # Output tracking
+        functions_emitted: u32
+        structs_emitted: u32
+        errors: vec<string>
+
+        # Current lowering state
+        current_basic_blocks: vec<BasicBlock>
+        current_instructions: vec<Instruction>
+        current_terminator: Terminator
+      }
+
+      on signal(ast_complete, ast) {
+        state.program = ast.program
+
+        # Initialize context
+        state.context = IRGenContext {
+          current_function: "",
+          current_hyphal: "",
+          current_trigger_frequency: "",
+          temp_counter: 0,
+          label_counter: 0,
+          frequency_map: map_new(),
+          struct_layouts: map_new(),
+          local_vars: map_new()
+        }
+
+        # Reset counters
+        state.functions_emitted = 0
+        state.structs_emitted = 0
+        vec_clear(state.errors)
+
+        # Phase 1: Build frequency ID map
+        build_frequency_map()
+
+        # Phase 2: Calculate struct layouts
+        calculate_all_layouts()
+
+        # Phase 3: Lower all hyphae to functions
+        lower_all_hyphae()
+
+        # Emit completion
+        emit ir_complete {
+          function_count: state.functions_emitted,
+          struct_count: state.structs_emitted
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # PHASE 1: Build Frequency Map
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule build_frequency_map() {
+        let freq_id: u32 = 1
+
+        # Iterate through all program items
+        for item in state.program.items {
+          match item {
+            ProgramItem::Frequency(freq_def) => {
+              map_insert(state.context.frequency_map, freq_def.name, freq_id)
+              freq_id = freq_id + 1
+            }
+            ProgramItem::Network(net_def) => {
+              for freq in net_def.frequencies {
+                map_insert(state.context.frequency_map, freq.name, freq_id)
+                freq_id = freq_id + 1
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # PHASE 2: Calculate Struct Layouts
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule calculate_all_layouts() {
+        # Calculate layouts for all frequencies (signal structs)
+        for item in state.program.items {
+          match item {
+            ProgramItem::Frequency(freq_def) => {
+              let layout = calculate_struct_layout(freq_def.fields)
+              let struct_name = format("Signal_{}", freq_def.name)
+              map_insert(state.context.struct_layouts, struct_name, layout)
+
+              # Emit struct definition
+              emit_struct_def(struct_name, layout)
+            }
+            ProgramItem::Network(net_def) => {
+              # Calculate layouts for network frequencies
+              for freq in net_def.frequencies {
+                let layout = calculate_struct_layout(freq.fields)
+                let struct_name = format("Signal_{}", freq.name)
+                map_insert(state.context.struct_layouts, struct_name, layout)
+                emit_struct_def(struct_name, layout)
+              }
+
+              # Calculate layouts for agent state structs
+              for hyphal in net_def.hyphae {
+                let layout = calculate_struct_layout_from_state(hyphal.state)
+                let struct_name = format("AgentState_{}", hyphal.name)
+                map_insert(state.context.struct_layouts, struct_name, layout)
+                emit_struct_def(struct_name, layout)
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+
+      rule calculate_struct_layout(fields: vec<FieldDef>) -> StructLayout {
+        let field_layouts: vec<FieldLayout> = vec_new()
+        let offset: u32 = 0
+        let max_alignment: u32 = 1
+
+        # First field is freq_id (u32)
+        vec_push(field_layouts, FieldLayout {
+          name: "freq_id",
+          offset: 0,
+          size: 4,
+          field_type: LIRType::I32
+        })
+        offset = 4
+        max_alignment = 4
+
+        # Process other fields
+        for field in fields {
+          let field_size = size_of(field.field_type)
+          let field_align = align_of(field.field_type)
+          max_alignment = max(max_alignment, field_align)
+
+          # Align offset
+          offset = align_up(offset, field_align)
+
+          vec_push(field_layouts, FieldLayout {
+            name: field.name,
+            offset: offset,
+            size: field_size,
+            field_type: type_ref_to_lir(field.field_type)
+          })
+
+          offset = offset + field_size
+        }
+
+        # Align total size to max alignment
+        let total_size = align_up(offset, max_alignment)
+
+        return StructLayout {
+          fields: field_layouts,
+          total_size: total_size,
+          alignment: max_alignment
+        }
+      }
+
+      rule calculate_struct_layout_from_state(state_block: StateBlock) -> StructLayout {
+        let field_layouts: vec<FieldLayout> = vec_new()
+        let offset: u32 = 0
+        let max_alignment: u32 = 1
+
+        for field in state_block.fields {
+          let field_size = size_of(field.field_type)
+          let field_align = align_of(field.field_type)
+          max_alignment = max(max_alignment, field_align)
+
+          offset = align_up(offset, field_align)
+
+          vec_push(field_layouts, FieldLayout {
+            name: field.name,
+            offset: offset,
+            size: field_size,
+            field_type: type_ref_to_lir(field.field_type)
+          })
+
+          offset = offset + field_size
+        }
+
+        let total_size = align_up(offset, max_alignment)
+
+        return StructLayout {
+          fields: field_layouts,
+          total_size: total_size,
+          alignment: max_alignment
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Helper: Size and Alignment
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule size_of(type_ref: TypeRef) -> u32 {
+        match type_ref {
+          TypeRef::Primitive(prim) => {
+            match prim {
+              PrimitiveType::U8 | PrimitiveType::I8 | PrimitiveType::Boolean => 1
+              PrimitiveType::U16 | PrimitiveType::I16 => 2
+              PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::F32 => 4
+              PrimitiveType::U64 | PrimitiveType::I64 | PrimitiveType::F64 => 8
+              PrimitiveType::String | PrimitiveType::Binary => 16  # ptr + len + cap
+              _ => 8
+            }
+          }
+          TypeRef::Vec(_) | TypeRef::Queue(_) | TypeRef::Map(_, _) => 16
+          TypeRef::Custom(_) => 8  # Assume pointer
+          _ => 8
+        }
+      }
+
+      rule align_of(type_ref: TypeRef) -> u32 {
+        match type_ref {
+          TypeRef::Primitive(prim) => {
+            match prim {
+              PrimitiveType::U8 | PrimitiveType::I8 | PrimitiveType::Boolean => 1
+              PrimitiveType::U16 | PrimitiveType::I16 => 2
+              PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::F32 => 4
+              PrimitiveType::U64 | PrimitiveType::I64 | PrimitiveType::F64 |
+              PrimitiveType::String | PrimitiveType::Binary => 8
+              _ => 8
+            }
+          }
+          TypeRef::Vec(_) | TypeRef::Queue(_) | TypeRef::Map(_, _) => 8
+          TypeRef::Custom(_) => 8
+          _ => 8
+        }
+      }
+
+      rule align_up(offset: u32, alignment: u32) -> u32 {
+        return (offset + alignment - 1) & !(alignment - 1)
+      }
+
+      rule max(a: u32, b: u32) -> u32 {
+        if a > b {
+          return a
+        }
+        return b
+      }
+
+      rule type_ref_to_lir(type_ref: TypeRef) -> LIRType {
+        match type_ref {
+          TypeRef::Primitive(prim) => {
+            match prim {
+              PrimitiveType::U8 | PrimitiveType::I8 => LIRType::I8
+              PrimitiveType::U16 | PrimitiveType::I16 => LIRType::I16
+              PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::Boolean => LIRType::I32
+              PrimitiveType::U64 | PrimitiveType::I64 => LIRType::I64
+              PrimitiveType::F32 => LIRType::F32
+              PrimitiveType::F64 => LIRType::F64
+              PrimitiveType::String | PrimitiveType::Binary => LIRType::Ptr
+              _ => LIRType::Ptr
+            }
+          }
+          TypeRef::Vec(_) | TypeRef::Queue(_) | TypeRef::Map(_, _) | TypeRef::Custom(_) => LIRType::Ptr
+          _ => LIRType::Ptr
+        }
+      }
+
+      rule emit_struct_def(name: string, layout: StructLayout) {
+        let struct_fields: vec<StructField> = vec_new()
+
+        for field_layout in layout.fields {
+          vec_push(struct_fields, StructField {
+            name: field_layout.name,
+            offset: field_layout.offset,
+            size: field_layout.size,
+            field_type: field_layout.field_type
+          })
+        }
+
+        emit lir_struct {
+          name: name,
+          fields: struct_fields,
+          total_size: layout.total_size,
+          alignment: layout.alignment
+        }
+
+        state.structs_emitted = state.structs_emitted + 1
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # PHASE 3: Lower Hyphae to Functions
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule lower_all_hyphae() {
+        for item in state.program.items {
+          match item {
+            ProgramItem::Network(net_def) => {
+              for hyphal in net_def.hyphae {
+                lower_hyphal(hyphal)
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+
+      rule lower_hyphal(hyphal: HyphalDef) {
+        # Generate function for each rule
+        let rule_idx: u32 = 0
+        for rule in hyphal.rules {
+          lower_rule(hyphal.name, rule, rule_idx)
+          rule_idx = rule_idx + 1
+        }
+
+        # Generate dispatch function
+        generate_dispatch_function(hyphal)
+      }
+
+      rule lower_rule(hyphal_name: string, rule: Rule, rule_idx: u32) {
+        # Reset function context
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+        map_clear(state.context.local_vars)
+
+        # Set current hyphal and trigger context
+        state.context.current_hyphal = hyphal_name
+
+        # Extract trigger name and set frequency context
+        let trigger_name = match rule.trigger {
+          RuleTrigger::Signal(sig_match) => {
+            state.context.current_trigger_frequency = sig_match.frequency
+            format("signal_{}", sig_match.frequency)
+          }
+          RuleTrigger::Rest => "rest"
+          RuleTrigger::Cycle(n) => format("cycle_{}", n)
+        }
+
+        # Function name: {hyphal}_{trigger}_rule_{idx}
+        let func_name = format("{}_{}_rule_{}", hyphal_name, trigger_name, rule_idx)
+        state.context.current_function = func_name
+
+        # Parameters: (state_ptr: *AgentState, signal_ptr: *Signal)
+        let params: vec<Parameter> = vec_new()
+        vec_push(params, Parameter { name: "state_ptr", param_type: LIRType::Ptr })
+        vec_push(params, Parameter { name: "signal_ptr", param_type: LIRType::Ptr })
+
+        # Create entry basic block
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+
+        # Lower rule body
+        for stmt in rule.body {
+          lower_statement(stmt)
+        }
+
+        # Add return terminator if no other terminator added
+        if vec_len(state.current_instructions) > 0 {
+          add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+          finalize_current_block()
+        }
+
+        # Emit function
+        emit lir_function {
+          name: func_name,
+          params: params,
+          return_type: LIRType::Void,
+          basic_blocks: state.current_basic_blocks
+        }
+
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Statement Lowering
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule lower_statement(stmt: Statement) {
+        match stmt {
+          Statement::Let(let_stmt) => {
+            lower_let_statement(let_stmt)
+          }
+          Statement::Assignment(assign_stmt) => {
+            lower_assignment_statement(assign_stmt)
+          }
+          Statement::Conditional(cond_stmt) => {
+            lower_conditional_statement(cond_stmt)
+          }
+          Statement::WhileLoop(while_stmt) => {
+            lower_while_loop_statement(while_stmt)
+          }
+          Statement::Emit(emit_stmt) => {
+            lower_emit_statement(emit_stmt)
+          }
+          Statement::Report(report_stmt) => {
+            lower_report_statement(report_stmt)
+          }
+          _ => {}
+        }
+      }
+
+      rule lower_let_statement(stmt: LetStatement) {
+        # Lower the value expression
+        let value_temp = lower_expression(stmt.value)
+
+        # Store in local variable map
+        map_insert(state.context.local_vars, stmt.name, value_temp)
+      }
+
+      rule lower_assignment_statement(stmt: AssignmentStatement) {
+        match stmt.target {
+          AssignmentTarget::StateField(field_name) => {
+            # Lower: state.field = value
+            # 1. Get field offset
+            let struct_name = format("AgentState_{}", state.context.current_hyphal)
+            let layout = map_get(state.context.struct_layouts, struct_name)
+            let field_offset = get_field_offset(layout, field_name)
+
+            # 2. Lower value expression
+            let value_temp = lower_expression(stmt.value)
+
+            # 3. Emit store_field instruction
+            add_instruction(Instruction::StoreField(StoreFieldInst {
+              object: "state_ptr",
+              offset: field_offset,
+              src: value_temp
+            }))
+          }
+          _ => {}
+        }
+      }
+
+      rule lower_conditional_statement(stmt: ConditionalStatement) {
+        # Create labels
+        let then_label = fresh_label()
+        let else_label = fresh_label()
+        let merge_label = fresh_label()
+
+        # Lower condition
+        let cond_temp = lower_expression(stmt.condition)
+
+        # Add branch terminator
+        add_terminator(Terminator::Branch(BranchTerm {
+          condition: cond_temp,
+          true_label: then_label,
+          false_label: else_label
+        }))
+        finalize_current_block()
+
+        # Then block
+        start_basic_block(then_label)
+        for then_stmt in stmt.then_body {
+          lower_statement(then_stmt)
+        }
+        add_terminator(Terminator::Jump(JumpTerm { target: merge_label }))
+        finalize_current_block()
+
+        # Else block
+        start_basic_block(else_label)
+        for else_stmt in stmt.else_body {
+          lower_statement(else_stmt)
+        }
+        add_terminator(Terminator::Jump(JumpTerm { target: merge_label }))
+        finalize_current_block()
+
+        # Merge block
+        start_basic_block(merge_label)
+      }
+
+      rule lower_while_loop_statement(stmt: WhileLoopStatement) {
+        # Create labels for loop structure
+        let loop_header = fresh_label()
+        let loop_body = fresh_label()
+        let loop_exit = fresh_label()
+
+        # Jump to loop header (end current block)
+        add_terminator(Terminator::Jump(JumpTerm { target: loop_header }))
+        finalize_current_block()
+
+        # Loop header: evaluate condition
+        start_basic_block(loop_header)
+        let cond_temp = lower_expression(stmt.condition)
+        add_terminator(Terminator::Branch(BranchTerm {
+          condition: cond_temp,
+          true_label: loop_body,
+          false_label: loop_exit
+        }))
+        finalize_current_block()
+
+        # Loop body: execute statements, then jump back to header
+        start_basic_block(loop_body)
+        for body_stmt in stmt.body {
+          lower_statement(body_stmt)
+        }
+        add_terminator(Terminator::Jump(JumpTerm { target: loop_header }))
+        finalize_current_block()
+
+        # Loop exit: continue execution after loop
+        start_basic_block(loop_exit)
+      }
+
+      rule lower_emit_statement(stmt: EmitStatement) {
+        # 1. Allocate signal struct
+        let freq_id = map_get(state.context.frequency_map, stmt.frequency)
+        let struct_name = format("Signal_{}", stmt.frequency)
+        let layout = map_get(state.context.struct_layouts, struct_name)
+
+        let sig_ptr = fresh_temp()
+        add_instruction(Instruction::Call(CallInst {
+          dst: sig_ptr,
+          func: "runtime_alloc_signal",
+          args: vec_from([freq_id, layout.total_size])
+        }))
+
+        # 2. Set freq_id field
+        add_instruction(Instruction::StoreField(StoreFieldInst {
+          object: sig_ptr,
+          offset: 0,
+          src: format("{}", freq_id)
+        }))
+
+        # 3. Set each field
+        for field_init in stmt.fields {
+          let field_offset = get_field_offset(layout, field_init.name)
+          let value_temp = lower_expression(field_init.value)
+
+          add_instruction(Instruction::StoreField(StoreFieldInst {
+            object: sig_ptr,
+            offset: field_offset,
+            src: value_temp
+          }))
+        }
+
+        # 4. Emit signal
+        add_instruction(Instruction::Call(CallInst {
+          dst: "",
+          func: "runtime_emit_signal",
+          args: vec_from(["state_ptr", sig_ptr])
+        }))
+      }
+
+      rule lower_report_statement(stmt: ReportStatement) {
+        let value_temp = lower_expression(stmt.value)
+        # TODO: Call runtime_report function
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Expression Lowering
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule lower_expression(expr: Expression) -> string {
+        match expr {
+          Expression::Literal(lit_expr) => {
+            return lower_literal(lit_expr)
+          }
+          Expression::Identifier(id_expr) => {
+            return lower_identifier(id_expr)
+          }
+          Expression::StateAccess(state_access) => {
+            return lower_state_access(state_access)
+          }
+          Expression::SignalAccess(sig_access) => {
+            return lower_signal_access(sig_access)
+          }
+          Expression::BinaryOp(bin_op) => {
+            return lower_binary_op(bin_op)
+          }
+          Expression::Call(call_expr) => {
+            return lower_call(call_expr)
+          }
+          Expression::FieldAccess(field_access) => {
+            return lower_field_access(field_access)
+          }
+          Expression::Grouped(grouped) => {
+            return lower_expression(grouped.inner)
+          }
+          Expression::UnaryOp(unary_op) => {
+            return lower_unary_op(unary_op)
+          }
+          _ => {
+            return ""
+          }
+        }
+      }
+
+      rule lower_unary_op(op_expr: UnaryOpExpr) -> string {
+        let operand_temp = lower_expression(op_expr.operand)
+        let result_temp = fresh_temp()
+
+        match op_expr.op {
+          UnaryOperator::Not => {
+            add_instruction(Instruction::Not(UnaryInst {
+              dst: result_temp,
+              operand: operand_temp
+            }))
+          }
+          UnaryOperator::Neg => {
+            add_instruction(Instruction::Neg(UnaryInst {
+              dst: result_temp,
+              operand: operand_temp
+            }))
+          }
+          UnaryOperator::Pos => {
+            # Unary + is a no-op, just return operand
+            return operand_temp
+          }
+        }
+
+        return result_temp
+      }
+
+      rule lower_literal(lit: LiteralExpr) -> string {
+        let temp = fresh_temp()
+
+        match lit.value {
+          Literal::Number(n) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Int(n),
+              const_type: LIRType::I64
+            }))
+          }
+          Literal::Float(f) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Float(f),
+              const_type: LIRType::F64
+            }))
+          }
+          Literal::String(s) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::String(s),
+              const_type: LIRType::Ptr
+            }))
+          }
+          Literal::Bool(b) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Bool(b),
+              const_type: LIRType::I32
+            }))
+          }
+        }
+
+        return temp
+      }
+
+      rule lower_identifier(id: IdentifierExpr) -> string {
+        # Look up in local variables
+        if map_contains_key(state.context.local_vars, id.name) {
+          return map_get(state.context.local_vars, id.name)
+        }
+
+        # Unknown identifier - return empty for now
+        # TODO: Error handling
+        return ""
+      }
+
+      rule lower_state_access(access: StateAccessExpr) -> string {
+        # state.field → load from state struct
+        let struct_name = format("AgentState_{}", state.context.current_hyphal)
+        let layout = map_get(state.context.struct_layouts, struct_name)
+        let field_offset = get_field_offset(layout, access.field)
+
+        # Get field address
+        let field_addr = fresh_temp()
+        add_instruction(Instruction::GetFieldAddr(GetFieldAddrInst {
+          dst: field_addr,
+          object: "state_ptr",
+          offset: field_offset
+        }))
+
+        # Load value
+        let value_temp = fresh_temp()
+        add_instruction(Instruction::Load(LoadInst {
+          dst: value_temp,
+          addr: field_addr
+        }))
+
+        return value_temp
+      }
+
+      rule lower_signal_access(access: SignalAccessExpr) -> string {
+        # g.name → load from signal struct
+        # Use current trigger frequency, not binding name
+        let struct_name = format("Signal_{}", state.context.current_trigger_frequency)
+        let layout = map_get(state.context.struct_layouts, struct_name)
+        let field_offset = get_field_offset(layout, access.field)
+
+        # Get field address
+        let field_addr = fresh_temp()
+        add_instruction(Instruction::GetFieldAddr(GetFieldAddrInst {
+          dst: field_addr,
+          object: "signal_ptr",
+          offset: field_offset
+        }))
+
+        # Load value
+        let value_temp = fresh_temp()
+        add_instruction(Instruction::Load(LoadInst {
+          dst: value_temp,
+          addr: field_addr
+        }))
+
+        return value_temp
+      }
+
+      rule lower_binary_op(op_expr: BinaryOpExpr) -> string {
+        let lhs_temp = lower_expression(op_expr.left)
+        let rhs_temp = lower_expression(op_expr.right)
+        let result_temp = fresh_temp()
+
+        match op_expr.op {
+          BinaryOperator::Add => {
+            add_instruction(Instruction::Add(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Sub => {
+            add_instruction(Instruction::Sub(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Mul => {
+            add_instruction(Instruction::Mul(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Div => {
+            add_instruction(Instruction::Div(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Mod => {
+            add_instruction(Instruction::Mod(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Eq => {
+            add_instruction(Instruction::CmpEq(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Ne => {
+            add_instruction(Instruction::CmpNe(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Lt => {
+            add_instruction(Instruction::CmpLt(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Le => {
+            add_instruction(Instruction::CmpLe(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Gt => {
+            add_instruction(Instruction::CmpGt(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Ge => {
+            add_instruction(Instruction::CmpGe(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::And => {
+            add_instruction(Instruction::And(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Or => {
+            add_instruction(Instruction::Or(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+        }
+
+        return result_temp
+      }
+
+      rule lower_call(call: CallExpr) -> string {
+        # Lower all arguments
+        let arg_temps: vec<string> = vec_new()
+        for arg in call.args {
+          let arg_temp = lower_expression(arg)
+          vec_push(arg_temps, arg_temp)
+        }
+
+        # Emit call instruction
+        let result_temp = fresh_temp()
+        add_instruction(Instruction::Call(CallInst {
+          dst: result_temp,
+          func: call.name,
+          args: arg_temps
+        }))
+
+        return result_temp
+      }
+
+      rule lower_field_access(access: FieldAccessExpr) -> string {
+        let object_temp = lower_expression(access.object)
+
+        # For now, assume object_temp is a struct pointer
+        # TODO: Look up struct layout and get field offset
+        let field_addr = fresh_temp()
+        add_instruction(Instruction::GetFieldAddr(GetFieldAddrInst {
+          dst: field_addr,
+          object: object_temp,
+          offset: 0  # TODO: Calculate actual offset
+        }))
+
+        let value_temp = fresh_temp()
+        add_instruction(Instruction::Load(LoadInst {
+          dst: value_temp,
+          addr: field_addr
+        }))
+
+        return value_temp
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Dispatch Function Generation
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule generate_dispatch_function(hyphal: HyphalDef) {
+        # Generate dispatch function: {hyphal}_dispatch(state_ptr, signal_ptr)
+        # This function switches on freq_id and calls appropriate rule handlers
+
+        # Reset function context
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+
+        let func_name = format("{}_dispatch", hyphal.name)
+        state.context.current_function = func_name
+        state.context.current_hyphal = hyphal.name
+
+        # Parameters: (state_ptr: *AgentState, signal_ptr: *Signal)
+        let params: vec<Parameter> = vec_new()
+        vec_push(params, Parameter { name: "state_ptr", param_type: LIRType::Ptr })
+        vec_push(params, Parameter { name: "signal_ptr", param_type: LIRType::Ptr })
+
+        # Entry block: Load freq_id from signal
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+
+        # Load freq_id (offset 0)
+        let freq_id_temp = fresh_temp()
+        add_instruction(Instruction::LoadField(LoadFieldInst {
+          dst: freq_id_temp,
+          object: "signal_ptr",
+          offset: 0
+        }))
+
+        # Group rules by frequency
+        let freq_rules = group_rules_by_frequency(hyphal.rules)
+
+        # Generate branches for each frequency
+        generate_frequency_dispatch(freq_rules, freq_id_temp)
+
+        # Emit function
+        emit lir_function {
+          name: func_name,
+          params: params,
+          return_type: LIRType::Void,
+          basic_blocks: state.current_basic_blocks
+        }
+
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      rule group_rules_by_frequency(rules: vec<Rule>) -> map<string, vec<Rule>> {
+        let freq_map: map<string, vec<Rule>> = map_new()
+
+        for rule in rules {
+          match rule.trigger {
+            RuleTrigger::Signal(sig_match) => {
+              let freq_name = sig_match.frequency
+              if !map_contains_key(freq_map, freq_name) {
+                map_insert(freq_map, freq_name, vec_new())
+              }
+              let rule_list = map_get(freq_map, freq_name)
+              vec_push(rule_list, rule)
+              map_insert(freq_map, freq_name, rule_list)
+            }
+            _ => {
+              # Rest and Cycle triggers handled separately
+            }
+          }
+        }
+
+        return freq_map
+      }
+
+      rule generate_frequency_dispatch(freq_rules: map<string, vec<Rule>>, freq_id_temp: string) {
+        # Generate switch-like structure with branches
+        let no_match_label = fresh_label()
+
+        # For each frequency, create a check and branch
+        for freq_name in map_keys(freq_rules) {
+          let freq_id = map_get(state.context.frequency_map, freq_name)
+          let freq_check_label = fresh_label()
+          let freq_handler_label = fresh_label()
+          let next_check_label = fresh_label()
+
+          # Check if freq_id matches
+          let cmp_temp = fresh_temp()
+          let freq_id_const = fresh_temp()
+          add_instruction(Instruction::Const(ConstInst {
+            dst: freq_id_const,
+            value: ConstValue::Int(freq_id),
+            const_type: LIRType::I32
+          }))
+          add_instruction(Instruction::CmpEq(CompareInst {
+            dst: cmp_temp,
+            lhs: freq_id_temp,
+            rhs: freq_id_const
+          }))
+
+          # Branch to handler if match, otherwise check next
+          add_terminator(Terminator::Branch(BranchTerm {
+            condition: cmp_temp,
+            true_label: freq_handler_label,
+            false_label: next_check_label
+          }))
+          finalize_current_block()
+
+          # Handler block: Try rules in order
+          start_basic_block(freq_handler_label)
+          let rules = map_get(freq_rules, freq_name)
+          generate_rule_dispatch_chain(rules, hyphal.name, freq_name, no_match_label)
+
+          # Next check block
+          start_basic_block(next_check_label)
+        }
+
+        # No match - drop signal
+        add_terminator(Terminator::Jump(JumpTerm { target: no_match_label }))
+        finalize_current_block()
+
+        # No match block
+        start_basic_block(no_match_label)
+        add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+        finalize_current_block()
+      }
+
+      rule generate_rule_dispatch_chain(rules: vec<Rule>, hyphal_name: string, freq_name: string, no_match_label: string) {
+        let done_label = fresh_label()
+        let rule_idx: u32 = 0
+
+        for rule in rules {
+          if has_guard(rule) {
+            # Rule with guard - check guard first
+            let guard_true_label = fresh_label()
+            let guard_false_label = fresh_label()
+
+            # Lower guard expression
+            state.context.current_trigger_frequency = freq_name
+            let guard_temp = lower_expression(rule.guard)
+
+            # Branch on guard
+            add_terminator(Terminator::Branch(BranchTerm {
+              condition: guard_temp,
+              true_label: guard_true_label,
+              false_label: guard_false_label
+            }))
+            finalize_current_block()
+
+            # Guard true - call rule function
+            start_basic_block(guard_true_label)
+            call_rule_function(hyphal_name, freq_name, rule_idx)
+            add_terminator(Terminator::Jump(JumpTerm { target: done_label }))
+            finalize_current_block()
+
+            # Guard false - try next rule
+            start_basic_block(guard_false_label)
+          } else {
+            # Rule without guard - always call
+            call_rule_function(hyphal_name, freq_name, rule_idx)
+            add_terminator(Terminator::Jump(JumpTerm { target: done_label }))
+            finalize_current_block()
+          }
+
+          rule_idx = rule_idx + 1
+        }
+
+        # No rule matched - jump to no_match
+        add_terminator(Terminator::Jump(JumpTerm { target: no_match_label }))
+        finalize_current_block()
+
+        # Done label
+        start_basic_block(done_label)
+        add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+        finalize_current_block()
+      }
+
+      rule has_guard(rule: Rule) -> boolean {
+        match rule.guard {
+          Expression::None => false
+          _ => true
+        }
+      }
+
+      rule call_rule_function(hyphal_name: string, freq_name: string, rule_idx: u32) {
+        let func_name = format("{}_signal_{}_rule_{}", hyphal_name, freq_name, rule_idx)
+        add_instruction(Instruction::Call(CallInst {
+          dst: "",
+          func: func_name,
+          args: vec_from(["state_ptr", "signal_ptr"])
+        }))
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Helpers
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule fresh_temp() -> string {
+        let temp_name = format("%tmp{}", state.context.temp_counter)
+        state.context.temp_counter = state.context.temp_counter + 1
+        return temp_name
+      }
+
+      rule fresh_label() -> string {
+        let label_name = format("bb{}", state.context.label_counter)
+        state.context.label_counter = state.context.label_counter + 1
+        return label_name
+      }
+
+      rule start_basic_block(label: string) {
+        vec_clear(state.current_instructions)
+      }
+
+      rule add_instruction(inst: Instruction) {
+        vec_push(state.current_instructions, inst)
+      }
+
+      rule add_terminator(term: Terminator) {
+        # Store terminator for current block
+        state.current_terminator = term
+      }
+
+      rule finalize_current_block() {
+        # Add current block to function with stored terminator
+        let block = BasicBlock {
+          label: format("bb{}", vec_len(state.current_basic_blocks)),
+          instructions: state.current_instructions,
+          terminator: state.current_terminator
+        }
+        vec_push(state.current_basic_blocks, block)
+
+        # Reset for next block
+        vec_clear(state.current_instructions)
+      }
+
+      rule get_field_offset(layout: StructLayout, field_name: string) -> u32 {
+        for field_layout in layout.fields {
+          if field_layout.name == field_name {
+            return field_layout.offset
+          }
+        }
+        return 0
+      }
+
+      rule vec_from(items: vec<string>) -> vec<string> {
+        return items
+      }
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TOPOLOGY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  topology {
+    spawn ir_generator as IRGen
+
+    socket ast_input -> IRGen (frequency: ast_complete)
+    socket IRGen -> lir_functions (frequency: lir_function)
+    socket IRGen -> lir_structs (frequency: lir_struct)
+    socket IRGen -> ir_done (frequency: ir_complete)
+    socket IRGen -> errors (frequency: ir_error)
+  }
+}

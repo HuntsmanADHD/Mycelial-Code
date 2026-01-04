@@ -1,0 +1,576 @@
+/* ============================================================================
+   MYCELIAL PLAYGROUND STYLES
+   Playground-specific layouts and components
+   ============================================================================ */
+
+/* ============================================================================
+   PLAYGROUND BODY
+   ============================================================================ */
+
+.playground-body {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-off-black);
+    color: var(--color-white);
+}
+
+/* ============================================================================
+   PLAYGROUND HEADER
+   ============================================================================ */
+
+.playground-header {
+    background: var(--color-black);
+    border-bottom: 1px solid var(--color-primary);
+    padding: 0.75rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(53, 94, 59, 0.1);
+}
+
+.header-left,
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.btn-back {
+    padding: 0.5rem 1rem;
+    background: var(--color-off-black);
+    color: var(--color-primary);
+    border: 1px solid var(--color-primary);
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.btn-back:hover {
+    background: var(--color-primary);
+    color: var(--color-white);
+    transform: translateX(-2px);
+}
+
+/* ============================================================================
+   PLAYGROUND CONTAINER (SPLIT PANEL)
+   ============================================================================ */
+
+.playground-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* ============================================================================
+   EDITOR PANEL (LEFT SIDE)
+   ============================================================================ */
+
+.editor-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--color-black);
+    border-right: 1px solid var(--color-primary);
+    overflow: hidden;
+}
+
+.editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--color-off-black);
+    border-bottom: 1px solid var(--color-primary);
+}
+
+.editor-tabs {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.editor-tab {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    background: var(--color-black);
+    border: 1px solid var(--color-primary);
+    border-radius: 6px 6px 0 0;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.editor-tab.active {
+    background: var(--color-primary);
+    color: var(--color-white);
+}
+
+.tab-icon {
+    font-size: 1rem;
+}
+
+.editor-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.status-indicator {
+    padding: 0.25rem 0.75rem;
+    background: var(--color-primary);
+    color: var(--color-white);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    font-family: var(--font-code);
+}
+
+/* ============================================================================
+   EDITOR CONTAINER (CODEMIRROR)
+   ============================================================================ */
+
+.editor-container {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
+}
+
+#code-editor {
+    width: 100%;
+    height: 100%;
+    border: none;
+    outline: none;
+    font-family: var(--font-code);
+    font-size: 14px;
+    line-height: 1.6;
+    background: var(--color-black);
+    color: var(--color-white);
+}
+
+/* CodeMirror overrides */
+.CodeMirror {
+    height: 100% !important;
+    background: var(--color-black) !important;
+    color: var(--color-white) !important;
+    font-family: var(--font-code) !important;
+    font-size: 14px !important;
+    line-height: 1.6 !important;
+}
+
+.CodeMirror-gutters {
+    background: var(--color-off-black) !important;
+    border-right: 1px solid var(--color-primary) !important;
+}
+
+.CodeMirror-linenumber {
+    color: var(--color-gray) !important;
+}
+
+.CodeMirror-cursor {
+    border-left: 2px solid var(--color-primary) !important;
+}
+
+.CodeMirror-selected {
+    background: rgba(53, 94, 59, 0.3) !important;
+}
+
+/* ============================================================================
+   EDITOR FOOTER
+   ============================================================================ */
+
+.editor-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--color-off-black);
+    border-top: 1px solid var(--color-primary);
+    gap: 1rem;
+}
+
+.footer-left,
+.footer-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.separator {
+    color: var(--color-gray);
+}
+
+#cursor-position {
+    font-family: var(--font-code);
+    font-size: 0.75rem;
+    color: var(--color-gray);
+}
+
+.select-input {
+    padding: 0.5rem;
+    background: var(--color-black);
+    color: var(--color-white);
+    border: 1px solid var(--color-primary);
+    border-radius: 4px;
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.select-input:hover {
+    background: var(--color-primary);
+}
+
+.select-input:focus {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+/* ============================================================================
+   OUTPUT PANEL (RIGHT SIDE)
+   ============================================================================ */
+
+.output-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--color-black);
+    overflow: hidden;
+}
+
+.output-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--color-off-black);
+    border-bottom: 1px solid var(--color-primary);
+}
+
+.output-tabs {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.output-tab {
+    padding: 0.5rem 1rem;
+    background: transparent;
+    color: var(--color-gray);
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.output-tab:hover {
+    color: var(--color-white);
+    background: rgba(53, 94, 59, 0.1);
+}
+
+.output-tab.active {
+    color: var(--color-primary);
+    border-bottom-color: var(--color-primary);
+}
+
+.btn-icon {
+    padding: 0.5rem;
+    background: transparent;
+    color: var(--color-primary);
+    border: 1px solid var(--color-primary);
+    border-radius: 4px;
+    font-size: 1.25rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-icon:hover {
+    background: var(--color-primary);
+    color: var(--color-white);
+}
+
+/* ============================================================================
+   OUTPUT CONTENT
+   ============================================================================ */
+
+.output-content {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
+    position: relative;
+}
+
+.tab-content {
+    display: none;
+    height: 100%;
+    overflow: auto;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.empty-state {
+    color: var(--color-gray);
+    font-style: italic;
+    text-align: center;
+    padding: 2rem;
+}
+
+/* Tokens Table */
+.output-table {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+}
+
+#tokens-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+#tokens-table thead {
+    position: sticky;
+    top: 0;
+    background: var(--color-off-black);
+    z-index: 1;
+}
+
+#tokens-table th {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-weight: 600;
+    color: var(--color-primary);
+    border-bottom: 2px solid var(--color-primary);
+}
+
+#tokens-table td {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid rgba(53, 94, 59, 0.2);
+    font-family: var(--font-code);
+    font-size: 0.875rem;
+}
+
+#tokens-table tbody tr:hover {
+    background: rgba(53, 94, 59, 0.1);
+}
+
+/* Output Pre (AST, Assembly, Binary) */
+.output-pre {
+    margin: 0;
+    padding: 1.5rem;
+    font-family: var(--font-code);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--color-white);
+    background: var(--color-black);
+    overflow: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Console Output */
+.console-content {
+    padding: 1rem;
+    font-family: var(--font-code);
+    font-size: 0.875rem;
+    line-height: 1.6;
+}
+
+.console-line {
+    margin-bottom: 0.5rem;
+    padding: 0.25rem 0;
+}
+
+.console-line.welcome {
+    color: var(--color-primary);
+    font-weight: 600;
+}
+
+.console-line.error {
+    color: #ff6b6b;
+}
+
+.console-line.warning {
+    color: #feca57;
+}
+
+.console-line.success {
+    color: #48dbfb;
+}
+
+/* ============================================================================
+   OUTPUT FOOTER
+   ============================================================================ */
+
+.output-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--color-off-black);
+    border-top: 1px solid var(--color-primary);
+}
+
+#compile-status {
+    font-family: var(--font-code);
+    font-size: 0.75rem;
+    color: var(--color-gray);
+}
+
+/* ============================================================================
+   MODAL
+   ============================================================================ */
+
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal.active {
+    display: flex;
+}
+
+.modal-content {
+    background: var(--color-off-black);
+    border: 1px solid var(--color-primary);
+    border-radius: 8px;
+    max-width: 600px;
+    width: 90%;
+    max-height: 80vh;
+    overflow: auto;
+    box-shadow: 0 8px 32px rgba(53, 94, 59, 0.3);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.5rem;
+    border-bottom: 1px solid var(--color-primary);
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 1.5rem;
+    color: var(--color-primary);
+}
+
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--color-gray);
+    font-size: 2rem;
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+.modal-close:hover {
+    color: var(--color-white);
+}
+
+.modal-body {
+    padding: 1.5rem;
+}
+
+.modal-body h3 {
+    color: var(--color-primary);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.modal-body h3:first-child {
+    margin-top: 0;
+}
+
+.modal-body ul {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+}
+
+.modal-body li {
+    margin-bottom: 0.5rem;
+}
+
+.shortcuts-list {
+    list-style: none;
+    padding: 0;
+}
+
+.shortcuts-list li {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid rgba(53, 94, 59, 0.2);
+}
+
+kbd {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    background: var(--color-black);
+    border: 1px solid var(--color-primary);
+    border-radius: 4px;
+    font-family: var(--font-code);
+    font-size: 0.75rem;
+    color: var(--color-primary);
+}
+
+/* ============================================================================
+   RESPONSIVE DESIGN
+   ============================================================================ */
+
+@media (max-width: 1024px) {
+    .playground-container {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr 1fr;
+    }
+
+    .editor-panel {
+        border-right: none;
+        border-bottom: 1px solid var(--color-primary);
+    }
+}
+
+@media (max-width: 768px) {
+    .playground-header {
+        padding: 0.5rem 1rem;
+    }
+
+    .header-left .logo-text,
+    .btn-text {
+        display: none;
+    }
+
+    .editor-footer,
+    .output-footer {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .footer-left,
+    .footer-right {
+        width: 100%;
+        justify-content: center;
+    }
+}
