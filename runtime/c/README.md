@@ -8,10 +8,14 @@ This directory contains the C runtime library for compiled Mycelial programs. It
 
 | File | Lines | Description |
 |------|-------|-------------|
-| `signal.h` | ~250 | Header with all struct definitions and function declarations |
+| `signal.h` | ~320 | Header with all struct definitions and function declarations |
+| `dispatch.h` | ~200 | Dispatch table types and handler function signatures |
 | `memory.c` | ~180 | Heap allocation using Linux mmap syscalls |
 | `signal.c` | ~280 | Signal allocation and ring buffer queue operations |
 | `routing.c` | ~320 | Routing table and agent registry |
+| `dispatch.c` | ~280 | Signal dispatch to handler functions |
+| `agents.h` | ~250 | Enhanced agent registry and topology types |
+| `agents.c` | ~400 | Agent registry and network initialization |
 
 ## Building
 
@@ -20,9 +24,11 @@ This directory contains the C runtime library for compiled Mycelial programs. It
 gcc -c -O2 -Wall -Wextra memory.c -o memory.o
 gcc -c -O2 -Wall -Wextra signal.c -o signal.o
 gcc -c -O2 -Wall -Wextra routing.c -o routing.o
+gcc -c -O2 -Wall -Wextra dispatch.c -o dispatch.o
+gcc -c -O2 -Wall -Wextra agents.c -o agents.o
 
 # Create static library
-ar rcs libmycelial_runtime.a memory.o signal.o routing.o
+ar rcs libmycelial_runtime.a memory.o signal.o routing.o dispatch.o agents.o
 
 # Or compile all at once
 gcc -c -O2 -Wall -Wextra *.c
@@ -99,6 +105,80 @@ if (received != NULL) {
 }
 ```
 
+### Signal Dispatch (Handler Tables)
+
+```c
+#include "dispatch.h"
+
+// Define a handler function
+int handle_increment(void* agent_state, Signal* signal) {
+    MyState* state = (MyState*)agent_state;
+    int* value = signal_get_payload(signal);
+    state->count += *value;
+    return 0;  // Success
+}
+
+// Guard function (for where clauses)
+int guard_positive(void* agent_state, Signal* signal) {
+    int* value = signal_get_payload(signal);
+    return (*value > 0) ? 1 : 0;  // Pass if > 0
+}
+
+// Create dispatch table for agent
+DispatchTable* table = dispatch_table_create(16, AGENT_ID);
+dispatch_set_state(table, &my_agent_state);
+
+// Register handlers
+dispatch_register(table, FREQ_INCREMENT, handle_increment, NULL);
+dispatch_register(table, FREQ_GUARDED, handle_guarded, guard_positive);
+
+// Dispatch a signal
+Signal* sig = signal_create(FREQ_INCREMENT, 1, &value, sizeof(value));
+int result = dispatch_invoke(table, sig);
+signal_free(sig);
+
+// Process all signals in queue
+int processed = dispatch_process_queue(table, queue);
+```
+
+### Network Topology Initialization
+
+```c
+#include "agents.h"
+
+// Define network topology (compile-time generated)
+AgentInfo agents[] = {
+    { .agent_id = 1, .name = "source", .state_size = 8, .queue_capacity = 64 },
+    { .agent_id = 2, .name = "sink", .state_size = 8, .queue_capacity = 64 }
+};
+
+SocketDef sockets[] = {
+    { .source_agent_id = 1, .frequency_id = 1, .dest_agent_id = 2 }
+};
+
+NetworkTopology topology = {
+    .agents = agents,
+    .agent_count = 2,
+    .sockets = sockets,
+    .socket_count = 1,
+    .network_name = "my_network"
+};
+
+// Initialize entire network
+AgentRegistry2* registry = topology_init(&topology);
+
+// Access agents
+AgentInfo* source = registry_get_agent(registry, 1);
+AgentInfo* sink = registry_get_agent_by_name(registry, "sink");
+
+// Signals route automatically via routing table
+Signal* sig = signal_create(1, 1, &data, sizeof(data));
+routing_broadcast(registry->routing, sig, old_registry);
+
+// Cleanup
+topology_shutdown(registry);
+```
+
 ## Performance Characteristics
 
 ### Cycle Counts (at 3 GHz)
@@ -112,6 +192,9 @@ if (received != NULL) {
 | `signal_queue_dequeue` | 12-20 | ~5ns |
 | `routing_lookup` | 20-30 | ~8ns |
 | `routing_broadcast` (per dest) | 50-100 | ~25ns |
+| `dispatch_lookup` | 10-20 | ~5ns |
+| `dispatch_invoke` | 30-50 | ~15ns |
+| `dispatch_process_queue` (per signal) | 50-80 | ~20ns |
 
 ### Memory Usage
 
@@ -121,6 +204,8 @@ if (received != NULL) {
 | SignalQueue struct | 64 bytes |
 | Queue buffer (1024 signals) | 8 KB |
 | RoutingEntry | 32 bytes |
+| DispatchTable struct | 40 bytes |
+| DispatchEntry | 24 bytes |
 | Default heap | 16 MB |
 
 ### Throughput Estimates
@@ -244,6 +329,64 @@ int routing_broadcast(RoutingTable* table, Signal* signal,
 AgentRegistry* agent_registry_create(uint32_t capacity);
 int agent_registry_add(AgentRegistry* registry, Agent* agent);
 Agent* agent_registry_get(AgentRegistry* registry, uint32_t agent_id);
+```
+
+### Dispatch Functions (`dispatch.c`)
+
+```c
+// Handler function signature
+typedef int (*signal_handler_fn)(void* agent_state, Signal* signal);
+typedef int (*guard_fn)(void* agent_state, Signal* signal);
+
+// Table management
+DispatchTable* dispatch_table_create(uint32_t capacity, uint32_t agent_id);
+void dispatch_table_destroy(DispatchTable* table);
+void dispatch_set_state(DispatchTable* table, void* state);
+void dispatch_set_default(DispatchTable* table, signal_handler_fn handler);
+
+// Handler registration
+int dispatch_register(DispatchTable* table, uint32_t frequency_id,
+                      signal_handler_fn handler, guard_fn guard);
+int dispatch_unregister(DispatchTable* table, uint32_t frequency_id);
+
+// Lookup and invoke
+signal_handler_fn dispatch_lookup(DispatchTable* table, uint32_t frequency_id);
+int dispatch_invoke(DispatchTable* table, Signal* signal);
+int dispatch_invoke_with_state(DispatchTable* table, void* state, Signal* signal);
+
+// Queue processing
+int dispatch_process_queue(DispatchTable* table, SignalQueue* queue);
+int dispatch_process_batch(DispatchTable* table, SignalQueue* queue, uint32_t max);
+```
+
+### Topology Functions (`agents.c`)
+
+```c
+// Registry management
+AgentRegistry2* registry_create(uint32_t capacity);
+void registry_destroy(AgentRegistry2* registry);
+
+// Agent registration
+int registry_register(AgentRegistry2* registry, uint32_t agent_id,
+                      const char* name, void* state, size_t state_size,
+                      SignalQueue* queue, DispatchTable* dispatch);
+
+// Agent lookup
+AgentInfo* registry_get_agent(AgentRegistry2* registry, uint32_t agent_id);
+AgentInfo* registry_get_agent_by_name(AgentRegistry2* registry, const char* name);
+SignalQueue* registry_get_queue(AgentRegistry2* registry, uint32_t agent_id);
+DispatchTable* registry_get_dispatch(AgentRegistry2* registry, uint32_t agent_id);
+
+// Network initialization
+AgentRegistry2* topology_init(NetworkTopology* topology);
+int topology_init_agent(AgentRegistry2* registry, AgentInfo* info);
+int topology_build_routes(AgentRegistry2* registry, SocketDef* sockets, uint32_t count);
+void topology_resolve_routes(AgentRegistry2* registry);
+void topology_shutdown(AgentRegistry2* registry);
+
+// Agent state helpers
+void* agent_state_alloc(size_t state_size);
+void agent_state_free(void* state, size_t state_size);
 ```
 
 ## Testing

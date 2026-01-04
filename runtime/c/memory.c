@@ -135,6 +135,11 @@ void* heap_allocate(size_t bytes) {
     /* Align to 8 bytes for proper alignment */
     bytes = (bytes + 7) & ~((size_t)7);
 
+    /* Ensure minimum size for FreeBlock header (16 bytes on x86_64) */
+    if (bytes < sizeof(FreeBlock)) {
+        bytes = sizeof(FreeBlock);
+    }
+
     /* First, check free list for suitable block */
     FreeBlock** prev = (FreeBlock**)&g_heap.free_list;
     FreeBlock* block = g_heap.free_list;
@@ -200,6 +205,11 @@ int heap_free(void* ptr, size_t bytes) {
 
     /* Align size */
     bytes = (bytes + 7) & ~((size_t)7);
+
+    /* Ensure minimum size for FreeBlock header */
+    if (bytes < sizeof(FreeBlock)) {
+        bytes = sizeof(FreeBlock);
+    }
 
     /* Create free block header in the freed memory */
     FreeBlock* block = (FreeBlock*)ptr;
