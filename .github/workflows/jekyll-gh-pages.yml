@@ -13,10 +13,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare site directory
+        run: |
+          mkdir -p site
+          cp index.html site/
+          cp playground.html site/
+          cp -r css site/
+          cp -r js site/
+          cp -r data site/
+          cp .nojekyll site/
+          echo "Files to deploy:"
+          ls -la site/
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .
-          keep_files: css,js,data,index.html,playground.html,.nojekyll
-          disable_nojekyll: false
+          publish_dir: ./site
+          force_orphan: true
