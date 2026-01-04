@@ -1,0 +1,720 @@
+# Lexer Agent
+#
+# Owner: Sonnet (Claude Sonnet 4.5)
+# Purpose: Transform source code into token stream for Parser Agent
+# Input: compile_request signal with source code
+# Output: token signals to Parser Agent
+#
+# Implementation: Character-by-character lexical analysis with:
+#   - Full Mycelial keyword recognition
+#   - Number literals (integers and floats)
+#   - String literals with escape sequences
+#   - Multi-character operators (==, !=, <=, >=, &&, ||, ->)
+#   - Single-line comments (#)
+#   - Precise line/column tracking for error reporting
+#
+# Reference: /home/lewey/Desktop/MyLanguage/05-TOOLS/simulator/src/parser/lexer.js
+
+network lexer {
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # FREQUENCY DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  frequencies {
+    # Input signal (from Orchestrator or direct invocation)
+    compile_request {
+      source_file: string       # Path to .mycelial source file
+      output_file: string       # Path for output (passed through)
+    }
+
+    # Alternative input for direct lexing
+    lex_request {
+      source: string            # Source code to tokenize
+      filename: string          # Source filename
+    }
+
+    # Output signals (to Parser)
+    token {
+      type: string              # Token type (NETWORK, IDENTIFIER, NUMBER, etc.)
+      value: string             # Token value as string
+      line: u32                 # Source line number
+      column: u32               # Source column number
+    }
+
+    lex_complete {
+      token_count: u32          # Total tokens emitted
+      error_count: u32          # Number of lexer errors
+    }
+
+    # Error signal
+    compilation_error {
+      stage: string             # Always "lexer"
+      message: string           # Error description
+      line: u32                 # Source line
+      column: u32               # Source column
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TYPE DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  types {
+    # Token structure (internal representation)
+    struct Token {
+      type: string
+      value: string
+      line: u32
+      column: u32
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LEXER HYPHAL
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  hyphae {
+
+    hyphal lexer {
+      # ─────────────────────────────────────────────────────────────────────────
+      # State Definition
+      # ─────────────────────────────────────────────────────────────────────────
+
+      state {
+        # Source tracking
+        source: string                    # Source code to tokenize
+        filename: string                  # Source filename
+        position: u32                     # Current position in source
+        line: u32                         # Current line number (1-indexed)
+        column: u32                       # Current column number (1-indexed)
+
+        # Progress tracking
+        tokens_emitted: u32               # Count of tokens emitted
+        error_count: u32                  # Lexer error count
+
+        # Keyword lookup table - maps keyword string to token type
+        keywords: map<string, string>
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Initialization
+      # ─────────────────────────────────────────────────────────────────────────
+
+      on rest {
+        state.position = 0
+        state.line = 1
+        state.column = 1
+        state.tokens_emitted = 0
+        state.error_count = 0
+        state.filename = "input.mycelial"
+
+        # Initialize keyword lookup table
+        # This maps all Mycelial keywords to their uppercase token types
+        state.keywords = map_new()
+
+        # Core language keywords
+        map_insert(state.keywords, "network", "NETWORK")
+        map_insert(state.keywords, "frequencies", "FREQUENCIES")
+        map_insert(state.keywords, "frequency", "FREQUENCY")
+        map_insert(state.keywords, "hyphae", "HYPHAE")
+        map_insert(state.keywords, "hyphal", "HYPHAL")
+        map_insert(state.keywords, "state", "STATE")
+        map_insert(state.keywords, "on", "ON")
+        map_insert(state.keywords, "signal", "SIGNAL")
+        map_insert(state.keywords, "emit", "EMIT")
+        map_insert(state.keywords, "report", "REPORT")
+        map_insert(state.keywords, "spawn", "SPAWN")
+        map_insert(state.keywords, "die", "DIE")
+
+        # Structural keywords
+        map_insert(state.keywords, "socket", "SOCKET")
+        map_insert(state.keywords, "fruiting_body", "FRUITING_BODY")
+        map_insert(state.keywords, "topology", "TOPOLOGY")
+        map_insert(state.keywords, "config", "CONFIG")
+        map_insert(state.keywords, "types", "TYPES")
+        map_insert(state.keywords, "struct", "STRUCT")
+        map_insert(state.keywords, "enum", "ENUM")
+        map_insert(state.keywords, "constants", "CONSTANTS")
+        map_insert(state.keywords, "import", "IMPORT")
+
+        # Control flow keywords
+        map_insert(state.keywords, "if", "IF")
+        map_insert(state.keywords, "else", "ELSE")
+        map_insert(state.keywords, "where", "WHERE")
+        map_insert(state.keywords, "rest", "REST")
+        map_insert(state.keywords, "cycle", "CYCLE")
+        map_insert(state.keywords, "let", "LET")
+        map_insert(state.keywords, "for", "FOR")
+        map_insert(state.keywords, "in", "IN")
+        map_insert(state.keywords, "while", "WHILE")
+        map_insert(state.keywords, "return", "RETURN")
+        map_insert(state.keywords, "break", "BREAK")
+        map_insert(state.keywords, "continue", "CONTINUE")
+
+        # Boolean literals
+        map_insert(state.keywords, "true", "TRUE")
+        map_insert(state.keywords, "false", "FALSE")
+
+        # Type keywords
+        map_insert(state.keywords, "u8", "U8")
+        map_insert(state.keywords, "u16", "U16")
+        map_insert(state.keywords, "u32", "U32")
+        map_insert(state.keywords, "u64", "U64")
+        map_insert(state.keywords, "i8", "I8")
+        map_insert(state.keywords, "i16", "I16")
+        map_insert(state.keywords, "i32", "I32")
+        map_insert(state.keywords, "i64", "I64")
+        map_insert(state.keywords, "f32", "F32")
+        map_insert(state.keywords, "f64", "F64")
+        map_insert(state.keywords, "string", "STRING_TYPE")
+        map_insert(state.keywords, "binary", "BINARY_TYPE")
+        map_insert(state.keywords, "boolean", "BOOLEAN_TYPE")
+        map_insert(state.keywords, "vec", "VEC")
+        map_insert(state.keywords, "queue", "QUEUE")
+        map_insert(state.keywords, "map", "MAP")
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Signal Handlers
+      # ─────────────────────────────────────────────────────────────────────────
+
+      # Handle compile_request - read file and tokenize
+      on signal(compile_request, req) {
+        state.filename = req.source_file
+        state.source = read_file(req.source_file)
+        state.position = 0
+        state.line = 1
+        state.column = 1
+        state.tokens_emitted = 0
+        state.error_count = 0
+
+        # Check if file was successfully read
+        if string_len(state.source) == 0 {
+          emit compilation_error {
+            stage: "lexer",
+            message: string_concat("Failed to read file: ", req.source_file),
+            line: 0,
+            column: 0
+          }
+          state.error_count = state.error_count + 1
+        }
+
+        # Start tokenization
+        tokenize_all()
+      }
+
+      # Handle direct lex_request - tokenize provided source
+      on signal(lex_request, req) {
+        state.source = req.source
+        state.filename = req.filename
+        state.position = 0
+        state.line = 1
+        state.column = 1
+        state.tokens_emitted = 0
+        state.error_count = 0
+
+        # Start tokenization
+        tokenize_all()
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Main Tokenization Loop
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule tokenize_all() {
+        # Process all characters in source
+        while state.position < string_len(state.source) {
+          # Skip whitespace and comments
+          skip_whitespace_and_comments()
+
+          # Check if we've reached the end
+          if state.position >= string_len(state.source) {
+            break
+          }
+
+          # Get next token and emit it
+          let tok = next_token()
+          emit token {
+            type: tok.type,
+            value: tok.value,
+            line: tok.line,
+            column: tok.column
+          }
+          state.tokens_emitted = state.tokens_emitted + 1
+        }
+
+        # Emit EOF token to signal end of input
+        emit token {
+          type: "EOF",
+          value: "",
+          line: state.line,
+          column: state.column
+        }
+        state.tokens_emitted = state.tokens_emitted + 1
+
+        # Signal completion
+        emit lex_complete {
+          token_count: state.tokens_emitted,
+          error_count: state.error_count
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Character Navigation
+      # ─────────────────────────────────────────────────────────────────────────
+
+      # Peek at character at current position + offset
+      # Returns empty string if out of bounds
+      rule peek(offset: u32) -> string {
+        let pos = state.position + offset
+        if pos >= string_len(state.source) {
+          return ""
+        }
+        return string_char_at(state.source, pos)
+      }
+
+      # Advance position and return current character
+      # Updates line/column tracking for newlines
+      rule advance() -> string {
+        if state.position >= string_len(state.source) {
+          return ""
+        }
+
+        let ch = string_char_at(state.source, state.position)
+        state.position = state.position + 1
+
+        # Update line/column tracking
+        if ch == "\n" {
+          state.line = state.line + 1
+          state.column = 1
+        } else {
+          state.column = state.column + 1
+        }
+
+        return ch
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Whitespace and Comment Handling
+      # ─────────────────────────────────────────────────────────────────────────
+
+      # Skip all whitespace characters (space, tab, newline, carriage return)
+      rule skip_whitespace() {
+        while state.position < string_len(state.source) {
+          let ch = peek(0)
+          if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" {
+            advance()
+          } else {
+            break
+          }
+        }
+      }
+
+      # Skip single-line comment (# to end of line)
+      # Returns true if a comment was skipped
+      rule skip_comment() -> boolean {
+        if peek(0) == "#" {
+          # Skip until newline or end of file
+          while state.position < string_len(state.source) && peek(0) != "\n" {
+            advance()
+          }
+          # Consume the newline if present
+          if peek(0) == "\n" {
+            advance()
+          }
+          return true
+        }
+        return false
+      }
+
+      # Skip whitespace and comments (loop until neither is found)
+      rule skip_whitespace_and_comments() {
+        while true {
+          skip_whitespace()
+          if !skip_comment() {
+            break
+          }
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Token Recognition Functions
+      # ─────────────────────────────────────────────────────────────────────────
+
+      # Read a number literal (integer or floating-point)
+      # Supports: 123, 123.456
+      rule read_number() -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let num_str = ""
+
+        # Read integer part (required)
+        while state.position < string_len(state.source) && is_digit(peek(0)) {
+          num_str = string_concat(num_str, advance())
+        }
+
+        # Read decimal part if present (must have digits after '.')
+        if peek(0) == "." && is_digit(peek(1)) {
+          num_str = string_concat(num_str, advance())  # consume '.'
+          while state.position < string_len(state.source) && is_digit(peek(0)) {
+            num_str = string_concat(num_str, advance())
+          }
+        }
+
+        return Token {
+          type: "NUMBER",
+          value: num_str,
+          line: start_line,
+          column: start_col
+        }
+      }
+
+      # Read a string literal (single or double quoted)
+      # Supports escape sequences: \n \t \r \\ \" \'
+      rule read_string(quote: string) -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let str_val = ""
+
+        advance()  # consume opening quote
+
+        # Read until closing quote or end of file
+        while state.position < string_len(state.source) && peek(0) != quote {
+          if peek(0) == "\\" {
+            advance()  # consume backslash
+            let next_ch = advance()
+
+            # Process escape sequences
+            if next_ch == "n" {
+              str_val = string_concat(str_val, "\n")
+            } else if next_ch == "t" {
+              str_val = string_concat(str_val, "\t")
+            } else if next_ch == "r" {
+              str_val = string_concat(str_val, "\r")
+            } else if next_ch == "\\" {
+              str_val = string_concat(str_val, "\\")
+            } else if next_ch == "\"" {
+              str_val = string_concat(str_val, "\"")
+            } else if next_ch == "'" {
+              str_val = string_concat(str_val, "'")
+            } else {
+              # Unknown escape sequence - include as-is
+              str_val = string_concat(str_val, next_ch)
+            }
+          } else {
+            str_val = string_concat(str_val, advance())
+          }
+        }
+
+        # Check for unterminated string
+        if state.position >= string_len(state.source) {
+          state.error_count = state.error_count + 1
+          emit compilation_error {
+            stage: "lexer",
+            message: "Unterminated string literal",
+            line: start_line,
+            column: start_col
+          }
+        } else {
+          advance()  # consume closing quote
+        }
+
+        return Token {
+          type: "STRING_LIT",
+          value: str_val,
+          line: start_line,
+          column: start_col
+        }
+      }
+
+      # Read an identifier or keyword
+      # Identifiers: [a-zA-Z_][a-zA-Z0-9_]*
+      rule read_identifier() -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let ident = ""
+
+        # Read all alphanumeric and underscore characters
+        while state.position < string_len(state.source) && is_alnum_or_underscore(peek(0)) {
+          ident = string_concat(ident, advance())
+        }
+
+        # Check if it's a keyword
+        if map_contains(state.keywords, ident) {
+          return Token {
+            type: map_get(state.keywords, ident),
+            value: ident,
+            line: start_line,
+            column: start_col
+          }
+        }
+
+        # It's an identifier
+        return Token {
+          type: "IDENTIFIER",
+          value: ident,
+          line: start_line,
+          column: start_col
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Main Token Extraction
+      # ─────────────────────────────────────────────────────────────────────────
+
+      # Get the next token from the input
+      # This is the heart of the lexer - it dispatches to specific token readers
+      rule next_token() -> Token {
+        let start_line = state.line
+        let start_col = state.column
+        let ch = peek(0)
+
+        # Number literals
+        if is_digit(ch) {
+          return read_number()
+        }
+
+        # String literals
+        if ch == "\"" || ch == "'" {
+          return read_string(ch)
+        }
+
+        # Identifiers and keywords
+        if is_alpha_or_underscore(ch) {
+          return read_identifier()
+        }
+
+        # Two-character operators
+        # We peek ahead to check for multi-character operators
+        let two_char = string_concat(ch, peek(1))
+
+        if two_char == "->" {
+          advance()
+          advance()
+          return Token { type: "ARROW", value: "->", line: start_line, column: start_col }
+        }
+
+        if two_char == "==" {
+          advance()
+          advance()
+          return Token { type: "EQ", value: "==", line: start_line, column: start_col }
+        }
+
+        if two_char == "!=" {
+          advance()
+          advance()
+          return Token { type: "NE", value: "!=", line: start_line, column: start_col }
+        }
+
+        if two_char == "<=" {
+          advance()
+          advance()
+          return Token { type: "LE", value: "<=", line: start_line, column: start_col }
+        }
+
+        if two_char == ">=" {
+          advance()
+          advance()
+          return Token { type: "GE", value: ">=", line: start_line, column: start_col }
+        }
+
+        if two_char == "&&" {
+          advance()
+          advance()
+          return Token { type: "AND", value: "&&", line: start_line, column: start_col }
+        }
+
+        if two_char == "||" {
+          advance()
+          advance()
+          return Token { type: "OR", value: "||", line: start_line, column: start_col }
+        }
+
+        # Single-character tokens
+        # Consume the character first, then return the appropriate token
+        advance()
+
+        if ch == "{" {
+          return Token { type: "LBRACE", value: "{", line: start_line, column: start_col }
+        }
+        if ch == "}" {
+          return Token { type: "RBRACE", value: "}", line: start_line, column: start_col }
+        }
+        if ch == "(" {
+          return Token { type: "LPAREN", value: "(", line: start_line, column: start_col }
+        }
+        if ch == ")" {
+          return Token { type: "RPAREN", value: ")", line: start_line, column: start_col }
+        }
+        if ch == "[" {
+          return Token { type: "LBRACKET", value: "[", line: start_line, column: start_col }
+        }
+        if ch == "]" {
+          return Token { type: "RBRACKET", value: "]", line: start_line, column: start_col }
+        }
+        if ch == "," {
+          return Token { type: "COMMA", value: ",", line: start_line, column: start_col }
+        }
+        if ch == ":" {
+          return Token { type: "COLON", value: ":", line: start_line, column: start_col }
+        }
+        if ch == "." {
+          return Token { type: "DOT", value: ".", line: start_line, column: start_col }
+        }
+        if ch == ";" {
+          return Token { type: "SEMICOLON", value: ";", line: start_line, column: start_col }
+        }
+        if ch == "=" {
+          return Token { type: "ASSIGN", value: "=", line: start_line, column: start_col }
+        }
+        if ch == "+" {
+          return Token { type: "PLUS", value: "+", line: start_line, column: start_col }
+        }
+        if ch == "-" {
+          return Token { type: "MINUS", value: "-", line: start_line, column: start_col }
+        }
+        if ch == "*" {
+          return Token { type: "STAR", value: "*", line: start_line, column: start_col }
+        }
+        if ch == "/" {
+          return Token { type: "SLASH", value: "/", line: start_line, column: start_col }
+        }
+        if ch == "%" {
+          return Token { type: "PERCENT", value: "%", line: start_line, column: start_col }
+        }
+        if ch == "<" {
+          return Token { type: "LT", value: "<", line: start_line, column: start_col }
+        }
+        if ch == ">" {
+          return Token { type: "GT", value: ">", line: start_line, column: start_col }
+        }
+        if ch == "!" {
+          return Token { type: "NOT", value: "!", line: start_line, column: start_col }
+        }
+        if ch == "@" {
+          return Token { type: "AT", value: "@", line: start_line, column: start_col }
+        }
+
+        # Unknown character - emit error and return error token
+        state.error_count = state.error_count + 1
+        emit compilation_error {
+          stage: "lexer",
+          message: string_concat("Unexpected character: '", string_concat(ch, "'")),
+          line: start_line,
+          column: start_col
+        }
+
+        return Token { type: "ERROR", value: ch, line: start_line, column: start_col }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Character Classification Helpers
+      # ─────────────────────────────────────────────────────────────────────────
+
+      # Check if character is a decimal digit (0-9)
+      rule is_digit(ch: string) -> boolean {
+        return ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" ||
+               ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"
+      }
+
+      # Check if character is alphabetic or underscore
+      # This is the start of an identifier
+      rule is_alpha_or_underscore(ch: string) -> boolean {
+        if ch == "_" {
+          return true
+        }
+        # Check lowercase a-z
+        if ch >= "a" && ch <= "z" {
+          return true
+        }
+        # Check uppercase A-Z
+        if ch >= "A" && ch <= "Z" {
+          return true
+        }
+        return false
+      }
+
+      # Check if character is alphanumeric or underscore
+      # This is the continuation of an identifier
+      rule is_alnum_or_underscore(ch: string) -> boolean {
+        return is_alpha_or_underscore(ch) || is_digit(ch)
+      }
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TOPOLOGY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  topology {
+    # Define I/O interfaces
+    fruiting_body input       # Receives compile_request or lex_request signals
+    fruiting_body output      # Emits token and lex_complete signals
+
+    # Spawn the lexer hyphal
+    spawn lexer as L1
+
+    # Connect input to lexer
+    socket input -> L1 (frequency: compile_request)
+    socket input -> L1 (frequency: lex_request)
+
+    # Connect lexer to output
+    socket L1 -> output (frequency: token)
+    socket L1 -> output (frequency: lex_complete)
+    socket L1 -> output (frequency: compilation_error)
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LEXER AGENT EXAMPLE USAGE
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The Lexer Agent is the first stage in the Mycelial compiler pipeline.
+# It transforms raw source code into a stream of tokens that the Parser
+# Agent can consume.
+#
+# ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+# │              │      │              │      │              │
+# │ Orchestrator │─────▶│    Lexer     │─────▶│    Parser    │
+# │              │      │              │      │              │
+# └──────────────┘      └──────────────┘      └──────────────┘
+#   compile_request       token stream         AST nodes
+#
+# INPUT SIGNALS:
+#   compile_request { source_file, output_file }
+#   lex_request { source, filename }
+#
+# OUTPUT SIGNALS:
+#   token { type, value, line, column } (streamed)
+#   lex_complete { token_count, error_count }
+#   compilation_error { stage, message, line, column }
+#
+# EXAMPLE TOKEN FLOW:
+#   Input: "network hello { }"
+#
+#   Output tokens:
+#     1. token { type: "NETWORK",    value: "network", line: 1, column: 1 }
+#     2. token { type: "IDENTIFIER", value: "hello",   line: 1, column: 9 }
+#     3. token { type: "LBRACE",     value: "{",       line: 1, column: 15 }
+#     4. token { type: "RBRACE",     value: "}",       line: 1, column: 17 }
+#     5. token { type: "EOF",        value: "",        line: 1, column: 18 }
+#     6. lex_complete { token_count: 5, error_count: 0 }
+#
+# KEYWORD RECOGNITION:
+#   The lexer recognizes 60+ Mycelial keywords including:
+#   - Core: network, frequencies, hyphae, hyphal, state, signal, emit
+#   - Control: if, else, where, for, while, cycle
+#   - Types: u32, i64, f64, string, boolean, vec, queue, map
+#
+# ERROR HANDLING:
+#   Errors are emitted as compilation_error signals and tracked in
+#   error_count. The lexer continues processing after errors to find
+#   as many issues as possible in a single pass.
+#
+# PERFORMANCE:
+#   Single-pass O(n) lexical analysis
+#   Character-by-character streaming
+#   Minimal memory overhead (no token buffering)
+#
+# ═══════════════════════════════════════════════════════════════════════════

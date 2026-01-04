@@ -1,0 +1,183 @@
+# Consensus Pattern in Mycelial
+# Multiple agents vote on a decision; majority wins. No central coordinator needed.
+
+network Consensus {
+  frequencies {
+    propose {
+      proposal_id: u32
+      value: string
+    }
+
+    vote {
+      proposal_id: u32
+      voter_id: u32
+      choice: string
+    }
+
+    decision {
+      proposal_id: u32
+      winning_choice: string
+      votes_for: u32
+      votes_total: u32
+    }
+
+    heartbeat {
+      # Empty—just a pulse
+    }
+  }
+
+  hyphae {
+    # A voter node receives proposals and votes
+    hyphal voter {
+      state {
+        voter_id: u32 = 0
+        proposals: map<u32, string> = {}
+        my_votes: map<u32, string> = {}
+      }
+
+      on signal(propose, p) {
+        # Remember this proposal
+        state.proposals[p.proposal_id] = p.value
+
+        # Decide: always vote for the proposed value (or implement smarter logic)
+        state.my_votes[p.proposal_id] = p.value
+
+        # Broadcast my vote to all other voters
+        emit vote {
+          proposal_id: p.proposal_id,
+          voter_id: state.voter_id,
+          choice: p.value
+        }
+      }
+
+      on signal(vote, v) {
+        # Receive a vote from another voter
+        # This hyphae's vote tally is private (each voter maintains own state)
+        # But signals are broadcast to allow global observation
+        report action: format("received_vote_for_{}", v.choice)
+      }
+
+      on signal(heartbeat) {
+        # Periodic liveness check
+        report health: "voting"
+      }
+    }
+
+    # A tallier watches votes and declares winners
+    hyphal tallier {
+      state {
+        votes: map<u32, map<string, u32>> = {}
+        decision_threshold: u32 = 2  # Majority of 3
+        total_voters: u32 = 3
+      }
+
+      on signal(vote, v) {
+        # Tally this vote
+        if !state.votes.contains_key(v.proposal_id) {
+          state.votes[v.proposal_id] = {}
+        }
+
+        let choice_votes = state.votes[v.proposal_id]
+        if !choice_votes.contains_key(v.choice) {
+          choice_votes[v.choice] = 0
+        }
+
+        choice_votes[v.choice] = choice_votes[v.choice] + 1
+
+        # Check if we have a decision
+        if choice_votes[v.choice] >= state.decision_threshold {
+          emit decision {
+            proposal_id: v.proposal_id,
+            winning_choice: v.choice,
+            votes_for: choice_votes[v.choice],
+            votes_total: state.total_voters
+          }
+
+          # Clear this proposal's votes
+          state.votes.remove(v.proposal_id)
+        }
+      }
+
+      on signal(heartbeat) {
+        report health: "tallying"
+      }
+    }
+
+    # An observer watches decisions
+    hyphal observer {
+      state {
+        decisions_seen: u32 = 0
+      }
+
+      on signal(decision, d) {
+        state.decisions_seen = state.decisions_seen + 1
+        report decision: format("proposal_{}_decided_{}", d.proposal_id, d.winning_choice)
+      }
+
+      on signal(heartbeat) {
+        report cycles: state.decisions_seen
+      }
+    }
+  }
+
+  topology {
+    fruiting_body proposals_input
+    fruiting_body decisions_output
+
+    # Spawn voter nodes
+    spawn voter as V1
+    spawn voter as V2
+    spawn voter as V3
+
+    # Spawn consensus infrastructure
+    spawn tallier as T1
+    spawn observer as O1
+
+    # Distribute proposals to all voters
+    socket proposals_input -> V1 (frequency: propose)
+    socket proposals_input -> V2 (frequency: propose)
+    socket proposals_input -> V3 (frequency: propose)
+
+    # Each voter broadcasts votes to tallier
+    socket V1 -> T1 (frequency: vote)
+    socket V2 -> T1 (frequency: vote)
+    socket V3 -> T1 (frequency: vote)
+
+    # Tallier broadcasts votes to all (for observation)
+    socket T1 -> * (frequency: vote)
+
+    # Decisions go to output and observer
+    socket T1 -> decisions_output (frequency: decision)
+    socket T1 -> O1 (frequency: decision)
+
+    # Optional: heartbeat for liveness
+    socket O1 -> * (frequency: heartbeat)
+  }
+
+  config {
+    cycle_period_ms: 100
+    enable_health_monitoring: true
+  }
+}
+
+# EXAMPLE EXECUTION:
+#
+# INPUT: propose(id=1, value="option_A")
+#
+# CYCLE 1:
+#   All voters receive proposal
+#   V1, V2, V3 each emit vote(id=1, voter=X, choice="option_A")
+#
+# CYCLE 2:
+#   Tallier receives 3 votes for option_A
+#   Meets threshold (2 votes), declares decision
+#   Tallier emits decision(id=1, choice="option_A", votes_for=3, total=3)
+#
+# OUTPUT: decision(proposal_id=1, winning_choice="option_A", votes=3/3)
+#
+# KEY PROPERTIES:
+#   - No single point of failure (voters are independent)
+#   - Decisions are made when threshold is met (not waiting for all votes)
+#   - Multiple proposals can proceed in parallel
+#   - If voters fail, consensus may not be reached (handled by timeout in real system)
+#   - Emergent agreement: hyphae don't coordinate, yet consensus emerges

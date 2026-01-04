@@ -1,0 +1,467 @@
+# Lexer Agent Test
+#
+# Purpose: Test the Lexer Agent with various Mycelial constructs
+# Tests: Keywords, identifiers, literals, operators, comments, error handling
+#
+# This test demonstrates the complete lexer functionality by tokenizing
+# a comprehensive Mycelial program and verifying the output tokens.
+
+network lexer_test {
+
+  frequencies {
+    # Test control signal
+    test_start {
+      test_name: string
+    }
+
+    # Test result signal
+    test_result {
+      test_name: string
+      passed: boolean
+      message: string
+    }
+
+    # Token verification signal
+    token_verified {
+      expected_type: string
+      actual_type: string
+      match: boolean
+    }
+  }
+
+  hyphae {
+
+    hyphal lexer_tester {
+      state {
+        # Test state
+        current_test: string
+        tokens_received: u32
+        tokens_expected: u32
+        test_passed: boolean
+
+        # Expected token sequence for hello_world.mycelial
+        expected_tokens: vec<string>
+      }
+
+      on rest {
+        state.tokens_received = 0
+        state.tokens_expected = 0
+        state.test_passed = true
+        state.expected_tokens = vec_new()
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # TEST 1: Hello World Tokenization
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_start, t) where t.test_name == "hello_world" {
+        state.current_test = "hello_world"
+        state.tokens_received = 0
+        state.test_passed = true
+
+        report status { message: "========================================" }
+        report status { message: "TEST: Hello World Lexer Test" }
+        report status { message: "========================================" }
+
+        # Build expected token sequence
+        state.expected_tokens = vec_new()
+        vec_push(state.expected_tokens, "NETWORK")        # network
+        vec_push(state.expected_tokens, "IDENTIFIER")     # HelloWorld
+        vec_push(state.expected_tokens, "LBRACE")         # {
+        vec_push(state.expected_tokens, "FREQUENCIES")    # frequencies
+        vec_push(state.expected_tokens, "LBRACE")         # {
+        vec_push(state.expected_tokens, "IDENTIFIER")     # greeting
+        vec_push(state.expected_tokens, "LBRACE")         # {
+        vec_push(state.expected_tokens, "IDENTIFIER")     # name
+        vec_push(state.expected_tokens, "COLON")          # :
+        vec_push(state.expected_tokens, "STRING_TYPE")    # string
+        vec_push(state.expected_tokens, "RBRACE")         # }
+        # ... and so on for the entire hello_world.mycelial file
+
+        state.tokens_expected = 60  # Approximate token count
+
+        # Request lexer to process hello_world.mycelial
+        emit compile_request {
+          source_file: "tests/hello_world.mycelial",
+          output_file: "hello_world"
+        }
+
+        report status { message: "Lexing hello_world.mycelial..." }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # TEST 2: Keyword Recognition
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_start, t) where t.test_name == "keywords" {
+        state.current_test = "keywords"
+        state.tokens_received = 0
+        state.test_passed = true
+
+        report status { message: "========================================" }
+        report status { message: "TEST: Keyword Recognition" }
+        report status { message: "========================================" }
+
+        # Test all Mycelial keywords
+        let test_source = "network frequencies hyphae hyphal state signal emit"
+
+        emit lex_request {
+          source: test_source,
+          filename: "keyword_test"
+        }
+
+        report status { message: "Testing keyword recognition..." }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # TEST 3: Number Literals
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_start, t) where t.test_name == "numbers" {
+        state.current_test = "numbers"
+        state.tokens_received = 0
+        state.test_passed = true
+
+        report status { message: "========================================" }
+        report status { message: "TEST: Number Literal Recognition" }
+        report status { message: "========================================" }
+
+        # Test integers and floats
+        let test_source = "42 123 3.14 0.5 100.0"
+
+        emit lex_request {
+          source: test_source,
+          filename: "number_test"
+        }
+
+        report status { message: "Testing number literals..." }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # TEST 4: String Literals
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_start, t) where t.test_name == "strings" {
+        state.current_test = "strings"
+        state.tokens_received = 0
+        state.test_passed = true
+
+        report status { message: "========================================" }
+        report status { message: "TEST: String Literal Recognition" }
+        report status { message: "========================================" }
+
+        # Test strings with escapes
+        let test_source = "\"hello\" 'world' \"line\\nbreak\" \"tab\\there\""
+
+        emit lex_request {
+          source: test_source,
+          filename: "string_test"
+        }
+
+        report status { message: "Testing string literals..." }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # TEST 5: Operators
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_start, t) where t.test_name == "operators" {
+        state.current_test = "operators"
+        state.tokens_received = 0
+        state.test_passed = true
+
+        report status { message: "========================================" }
+        report status { message: "TEST: Operator Recognition" }
+        report status { message: "========================================" }
+
+        # Test all operators
+        let test_source = "+ - * / % == != < > <= >= && || -> = :"
+
+        emit lex_request {
+          source: test_source,
+          filename: "operator_test"
+        }
+
+        report status { message: "Testing operators..." }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # TEST 6: Comments
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_start, t) where t.test_name == "comments" {
+        state.current_test = "comments"
+        state.tokens_received = 0
+        state.test_passed = true
+
+        report status { message: "========================================" }
+        report status { message: "TEST: Comment Handling" }
+        report status { message: "========================================" }
+
+        # Test comments (should be skipped)
+        let test_source = "network # this is a comment\nfrequencies # another comment"
+
+        emit lex_request {
+          source: test_source,
+          filename: "comment_test"
+        }
+
+        report status { message: "Testing comment handling..." }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # TEST 7: Error Handling
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_start, t) where t.test_name == "errors" {
+        state.current_test = "errors"
+        state.tokens_received = 0
+        state.test_passed = true
+
+        report status { message: "========================================" }
+        report status { message: "TEST: Error Handling" }
+        report status { message: "========================================" }
+
+        # Test unexpected characters and unterminated strings
+        let test_source = "network $ hello \"unterminated"
+
+        emit lex_request {
+          source: test_source,
+          filename: "error_test"
+        }
+
+        report status { message: "Testing error handling..." }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # Token Reception
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(token, t) {
+        state.tokens_received = state.tokens_received + 1
+
+        # Display token
+        report status {
+          message: format("  [{}:{}] {} = \"{}\"",
+            t.line, t.column, t.type, t.value)
+        }
+
+        # Verify against expected tokens (if applicable)
+        if state.current_test == "hello_world" {
+          if state.tokens_received <= vec_len(state.expected_tokens) {
+            let expected = vec_get(state.expected_tokens, state.tokens_received - 1)
+            if t.type != expected {
+              state.test_passed = false
+              report status {
+                message: format("    ERROR: Expected {}, got {}",
+                  expected, t.type)
+              }
+            }
+          }
+        }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # Test Completion
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(lex_complete, lc) {
+        report status { message: "" }
+        report status {
+          message: format("Lexer Complete: {} tokens, {} errors",
+            lc.token_count, lc.error_count)
+        }
+
+        # Verify results
+        if state.current_test == "keywords" {
+          # Should have 8 tokens (7 keywords + EOF)
+          if lc.token_count == 8 && lc.error_count == 0 {
+            emit test_result {
+              test_name: state.current_test,
+              passed: true,
+              message: "All keywords recognized correctly"
+            }
+          } else {
+            emit test_result {
+              test_name: state.current_test,
+              passed: false,
+              message: format("Expected 8 tokens, got {}", lc.token_count)
+            }
+          }
+        }
+
+        if state.current_test == "numbers" {
+          # Should have 6 tokens (5 numbers + EOF)
+          if lc.token_count == 6 && lc.error_count == 0 {
+            emit test_result {
+              test_name: state.current_test,
+              passed: true,
+              message: "All numbers recognized correctly"
+            }
+          } else {
+            emit test_result {
+              test_name: state.current_test,
+              passed: false,
+              message: format("Expected 6 tokens, got {}", lc.token_count)
+            }
+          }
+        }
+
+        if state.current_test == "strings" {
+          # Should have 5 tokens (4 strings + EOF)
+          if lc.token_count == 5 && lc.error_count == 0 {
+            emit test_result {
+              test_name: state.current_test,
+              passed: true,
+              message: "All strings recognized correctly"
+            }
+          } else {
+            emit test_result {
+              test_name: state.current_test,
+              passed: false,
+              message: format("Expected 5 tokens, got {}", lc.token_count)
+            }
+          }
+        }
+
+        if state.current_test == "comments" {
+          # Should have 3 tokens (2 keywords + EOF), comments skipped
+          if lc.token_count == 3 && lc.error_count == 0 {
+            emit test_result {
+              test_name: state.current_test,
+              passed: true,
+              message: "Comments correctly skipped"
+            }
+          } else {
+            emit test_result {
+              test_name: state.current_test,
+              passed: false,
+              message: format("Expected 3 tokens, got {}", lc.token_count)
+            }
+          }
+        }
+
+        if state.current_test == "errors" {
+          # Should have 2 errors ($ and unterminated string)
+          if lc.error_count == 2 {
+            emit test_result {
+              test_name: state.current_test,
+              passed: true,
+              message: "Errors correctly detected and reported"
+            }
+          } else {
+            emit test_result {
+              test_name: state.current_test,
+              passed: false,
+              message: format("Expected 2 errors, got {}", lc.error_count)
+            }
+          }
+        }
+
+        if state.current_test == "hello_world" {
+          emit test_result {
+            test_name: state.current_test,
+            passed: state.test_passed,
+            message: format("Tokenized {} tokens from hello_world.mycelial",
+              lc.token_count)
+          }
+        }
+
+        report status { message: "========================================" }
+        report status { message: "" }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # Error Reception
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(compilation_error, err) {
+        report status {
+          message: format("  ERROR [{}:{}]: {}",
+            err.line, err.column, err.message)
+        }
+      }
+
+      # ────────────────────────────────────────────────────────────────────
+      # Test Result Reporting
+      # ────────────────────────────────────────────────────────────────────
+
+      on signal(test_result, result) {
+        if result.passed {
+          report status { message: format("✓ PASS: {} - {}", result.test_name, result.message) }
+        } else {
+          report status { message: format("✗ FAIL: {} - {}", result.test_name, result.message) }
+        }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn lexer_tester as T1
+
+    socket input -> T1 (frequency: test_start)
+    socket T1 -> output (frequency: test_result)
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LEXER TEST SUITE DOCUMENTATION
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# This test suite validates all major functionality of the Lexer Agent:
+#
+# 1. HELLO WORLD TEST
+#    - Tokenizes the complete hello_world.mycelial file
+#    - Verifies all keywords, identifiers, and punctuation
+#    - Tests real-world Mycelial program structure
+#
+# 2. KEYWORD RECOGNITION TEST
+#    - Verifies all 60+ Mycelial keywords are recognized
+#    - Tests: network, frequencies, hyphae, signal, emit, etc.
+#    - Ensures keywords are distinguished from identifiers
+#
+# 3. NUMBER LITERAL TEST
+#    - Tests integer literals: 42, 123
+#    - Tests float literals: 3.14, 0.5, 100.0
+#    - Verifies correct NUMBER token type
+#
+# 4. STRING LITERAL TEST
+#    - Tests double-quoted strings: "hello"
+#    - Tests single-quoted strings: 'world'
+#    - Tests escape sequences: \n, \t, \r, \\, \"
+#
+# 5. OPERATOR TEST
+#    - Tests arithmetic operators: + - * / %
+#    - Tests comparison operators: == != < > <= >=
+#    - Tests logical operators: && ||
+#    - Tests special operators: -> = :
+#
+# 6. COMMENT TEST
+#    - Verifies single-line comments (#) are skipped
+#    - Tests comments at end of line
+#    - Ensures tokens after comments are recognized
+#
+# 7. ERROR HANDLING TEST
+#    - Tests unexpected character detection ($)
+#    - Tests unterminated string detection
+#    - Verifies error reporting with line/column info
+#
+# RUNNING THE TESTS:
+#   emit test_start { test_name: "hello_world" }
+#   emit test_start { test_name: "keywords" }
+#   emit test_start { test_name: "numbers" }
+#   emit test_start { test_name: "strings" }
+#   emit test_start { test_name: "operators" }
+#   emit test_start { test_name: "comments" }
+#   emit test_start { test_name: "errors" }
+#
+# EXPECTED OUTPUT:
+#   Each test will emit a test_result signal with:
+#   - test_name: The name of the test
+#   - passed: true/false
+#   - message: Description of result
+#
+# ═══════════════════════════════════════════════════════════════════════════

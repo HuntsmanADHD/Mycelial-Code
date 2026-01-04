@@ -1,0 +1,1230 @@
+# x86-64 Code Generator Agent
+#
+# Owner: Opus (Claude Opus 4.5)
+# Purpose: Translate LIR instructions to x86-64 assembly
+# Input: ir_node(IRInstruction) signals from IR Generator
+# Output: asm_instruction(AsmInstruction) signals to Assembler
+#
+# Implementation of the code generation strategy from:
+#   /docs/architecture/x86-64-codegen.md
+#   /docs/architecture/codegen-lir-mapping.md
+
+network x86_codegen {
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # FREQUENCY DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  frequencies {
+    # Input signals (from IR Generator)
+    ir_node {
+      instruction: IRInstruction
+    }
+
+    ir_function_start {
+      name: string
+      params: vec<Param>
+      return_type: Type
+    }
+
+    ir_function_end {
+      name: string
+    }
+
+    ir_complete {
+      instruction_count: u32
+    }
+
+    # Output signals (to Assembler)
+    asm_instruction {
+      label: string        # Optional label for this instruction
+      mnemonic: string     # e.g., "movq", "addq", "ret"
+      operands: vec<string> # e.g., ["%rax", "%rbx"] or ["$42", "%rdi"]
+    }
+
+    asm_data {
+      label: string
+      data_type: string    # "asciz", "quad", "byte"
+      value: string
+    }
+
+    codegen_complete {
+      instruction_count: u32
+      function_count: u32
+    }
+
+    # Internal signals
+    allocation_complete {
+      virtual_to_physical: map<string, string>
+      spill_slots: map<string, i32>
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TYPE DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  types {
+    # LIR Instruction (received from IR Generator)
+    struct IRInstruction {
+      op: IROpcode
+      dst: string          # Destination virtual register or empty
+      src1: string         # First source operand
+      src2: string         # Second source operand (optional)
+      type_size: u32       # Operand size in bytes (1, 2, 4, 8)
+      label: string        # Basic block label (optional)
+    }
+
+    enum IROpcode {
+      # Data movement
+      MOVE, CONST, LOAD, STORE, LOAD_FIELD, STORE_FIELD,
+      # Arithmetic
+      ADD, SUB, MUL, DIV, MOD, NEG,
+      # Logical
+      AND, OR, XOR, NOT, SHL, SHR,
+      # Comparison
+      CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE,
+      # Control flow
+      JUMP, BRANCH, RET, CALL,
+      # Special
+      ALLOC, FREE, PHI, GET_FIELD_ADDR, BITCAST, LABEL
+    }
+
+    struct Param {
+      name: string
+      param_type: Type
+    }
+
+    enum Type {
+      I8, I16, I32, I64, PTR, VOID
+    }
+
+    # Live interval for register allocation
+    struct LiveInterval {
+      vreg: string         # Virtual register name
+      start: u32           # First use position
+      end: u32             # Last use position
+      assigned: string     # Assigned physical register (empty if spilled)
+      spill_slot: i32      # Stack offset if spilled (-1 if not)
+    }
+
+    # Physical register info
+    struct PhysReg {
+      name: string
+      is_callee_saved: boolean
+      is_available: boolean
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CODE GENERATOR AGENT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  hyphae {
+    hyphal x86_codegen {
+      frequency tidal_cycle
+
+      state {
+        # Buffered input
+        ir_instructions: vec<IRInstruction>
+        current_function: string
+        current_params: vec<Param>
+        current_return_type: Type
+
+        # Register allocation state
+        live_intervals: vec<LiveInterval>
+        active_intervals: vec<LiveInterval>
+        allocation: map<string, string>      # vreg -> physical reg
+        spill_slots: map<string, i32>        # vreg -> stack offset
+        next_spill_offset: i32
+
+        # Output tracking
+        asm_count: u32
+        function_count: u32
+
+        # Physical register pool (System V AMD64 allocatable)
+        available_regs: vec<string>
+        callee_saved_regs: vec<string>
+        caller_saved_regs: vec<string>
+
+        # Argument registers
+        arg_regs: vec<string>
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # INITIALIZATION
+      # ─────────────────────────────────────────────────────────────────────────
+
+      on rest {
+        # Initialize register pools (run once on first cycle)
+        if vec_len(state.available_regs) == 0 {
+          # Allocatable registers (10 total)
+          state.available_regs = vec_from(
+            "r10", "r11",     # Scratch (prefer these first)
+            "rbx", "r15",     # Callee-saved
+            "rax", "rcx", "rdx", "rsi", "rdi",  # Caller-saved
+            "r8", "r9"        # More caller-saved
+          )
+
+          # Callee-saved (must preserve)
+          state.callee_saved_regs = vec_from("rbx", "r12", "r13", "r14", "r15")
+
+          # Caller-saved (can clobber)
+          state.caller_saved_regs = vec_from(
+            "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"
+          )
+
+          # Argument passing order (System V AMD64)
+          state.arg_regs = vec_from("rdi", "rsi", "rdx", "rcx", "r8", "r9")
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # SIGNAL HANDLERS - SENSE PHASE
+      # ─────────────────────────────────────────────────────────────────────────
+
+      on signal(ir_function_start, func) {
+        # New function starting
+        state.current_function = func.name
+        state.current_params = func.params
+        state.current_return_type = func.return_type
+
+        # Reset per-function state
+        vec_clear(state.ir_instructions)
+        vec_clear(state.live_intervals)
+        vec_clear(state.active_intervals)
+        map_clear(state.allocation)
+        map_clear(state.spill_slots)
+        state.next_spill_offset = -8  # First spill slot at [rbp-8]
+      }
+
+      on signal(ir_node, node) {
+        # Buffer IR instruction
+        vec_push(state.ir_instructions, node.instruction)
+      }
+
+      on signal(ir_function_end, func) {
+        # Function complete - generate code
+        generate_function(func.name)
+        state.function_count = state.function_count + 1
+      }
+
+      on signal(ir_complete, irc) {
+        # All IR received - emit completion signal
+        emit codegen_complete {
+          instruction_count: state.asm_count,
+          function_count: state.function_count
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # CODE GENERATION - ACT PHASE
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule generate_function(func_name: string) {
+        # Phase 1: Build live intervals
+        build_live_intervals()
+
+        # Phase 2: Register allocation (linear scan)
+        allocate_registers()
+
+        # Phase 3: Emit function prologue
+        emit_prologue(func_name)
+
+        # Phase 4: Translate each IR instruction to x86-64
+        let position = 0u32
+        for ir_inst in state.ir_instructions {
+          translate_instruction(ir_inst, position)
+          position = position + 1
+        }
+
+        # Phase 5: Emit function epilogue (handled by RET instruction)
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # LIVE INTERVAL CONSTRUCTION
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule build_live_intervals() {
+        let interval_map: map<string, LiveInterval> = map_new()
+        let position = 0u32
+
+        for ir_inst in state.ir_instructions {
+          # Record definition (dst)
+          if ir_inst.dst != "" {
+            if !map_has(interval_map, ir_inst.dst) {
+              # First definition - create interval
+              let interval = LiveInterval {
+                vreg: ir_inst.dst,
+                start: position,
+                end: position,
+                assigned: "",
+                spill_slot: -1
+              }
+              map_set(interval_map, ir_inst.dst, interval)
+            } else {
+              # Update end position
+              let interval = map_get(interval_map, ir_inst.dst)
+              interval.end = position
+              map_set(interval_map, ir_inst.dst, interval)
+            }
+          }
+
+          # Record uses (src1, src2)
+          for src in vec_from(ir_inst.src1, ir_inst.src2) {
+            if src != "" && !is_immediate(src) && !is_label(src) {
+              if map_has(interval_map, src) {
+                let interval = map_get(interval_map, src)
+                interval.end = position
+                map_set(interval_map, src, interval)
+              }
+            }
+          }
+
+          position = position + 1
+        }
+
+        # Convert map to sorted vector (by start position)
+        state.live_intervals = map_values_sorted(interval_map,
+          fn(a, b) { a.start < b.start })
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # REGISTER ALLOCATION (Linear Scan)
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule allocate_registers() {
+        vec_clear(state.active_intervals)
+
+        for interval in state.live_intervals {
+          # Expire old intervals
+          expire_old_intervals(interval.start)
+
+          # Find a free register
+          let free_reg = find_free_register()
+
+          if free_reg != "" {
+            # Assign register
+            interval.assigned = free_reg
+            map_set(state.allocation, interval.vreg, free_reg)
+            vec_push(state.active_intervals, interval)
+          } else {
+            # Spill - no free registers
+            spill_at_interval(interval)
+          }
+        }
+      }
+
+      rule expire_old_intervals(current_pos: u32) {
+        let new_active: vec<LiveInterval> = vec_new()
+
+        for interval in state.active_intervals {
+          if interval.end >= current_pos {
+            vec_push(new_active, interval)
+          }
+          # Expired intervals release their registers automatically
+          # (they're no longer in active, so their reg becomes free)
+        }
+
+        state.active_intervals = new_active
+      }
+
+      rule find_free_register() -> string {
+        let used_regs: vec<string> = vec_new()
+
+        for interval in state.active_intervals {
+          if interval.assigned != "" {
+            vec_push(used_regs, interval.assigned)
+          }
+        }
+
+        for reg in state.available_regs {
+          if !vec_contains(used_regs, reg) {
+            return reg
+          }
+        }
+
+        return ""  # No free register
+      }
+
+      rule spill_at_interval(interval: LiveInterval) {
+        # Check if we should spill this interval or an active one
+        if vec_len(state.active_intervals) == 0 {
+          # Must spill current interval
+          do_spill(interval)
+          return
+        }
+
+        # Find the active interval that ends latest
+        let spill_candidate = state.active_intervals[0]
+        for active in state.active_intervals {
+          if active.end > spill_candidate.end {
+            spill_candidate = active
+          }
+        }
+
+        if spill_candidate.end > interval.end {
+          # Spill the longer-living active interval
+          # Give its register to current interval
+          interval.assigned = spill_candidate.assigned
+          map_set(state.allocation, interval.vreg, interval.assigned)
+
+          # Spill the old one
+          do_spill(spill_candidate)
+
+          # Remove old from active, add new
+          vec_remove(state.active_intervals, spill_candidate)
+          vec_push(state.active_intervals, interval)
+        } else {
+          # Spill current interval
+          do_spill(interval)
+        }
+      }
+
+      rule do_spill(interval: LiveInterval) {
+        interval.spill_slot = state.next_spill_offset
+        state.next_spill_offset = state.next_spill_offset - 8
+        map_set(state.spill_slots, interval.vreg, interval.spill_slot)
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # FUNCTION PROLOGUE / EPILOGUE
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule emit_prologue(func_name: string) {
+        # Function label
+        emit asm_instruction {
+          label: func_name,
+          mnemonic: "",
+          operands: vec_new()
+        }
+
+        # Push frame pointer
+        emit asm_instruction {
+          label: "",
+          mnemonic: "pushq",
+          operands: vec_from("%rbp")
+        }
+
+        # Set up frame pointer
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rsp", "%rbp")
+        }
+
+        # Allocate stack space (aligned to 16 bytes)
+        let frame_size = calculate_frame_size()
+        if frame_size > 0 {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "subq",
+            operands: vec_from(format("${}", frame_size), "%rsp")
+          }
+        }
+
+        # Save callee-saved registers we're using
+        let used_callee_saved = get_used_callee_saved()
+        for reg in used_callee_saved {
+          let offset = get_callee_save_offset(reg)
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(format("%{}", reg), format("{}(%rbp)", offset))
+          }
+        }
+
+        # Move arguments from registers to local storage if needed
+        let param_idx = 0u32
+        for param in state.current_params {
+          if param_idx < 6 {
+            let arg_reg = state.arg_regs[param_idx]
+            let dst = get_operand(param.name)
+            if dst != format("%{}", arg_reg) {
+              emit asm_instruction {
+                label: "",
+                mnemonic: "movq",
+                operands: vec_from(format("%{}", arg_reg), dst)
+              }
+            }
+          }
+          param_idx = param_idx + 1
+        }
+
+        state.asm_count = state.asm_count + 4 + vec_len(used_callee_saved)
+      }
+
+      rule emit_epilogue() {
+        # Restore callee-saved registers
+        let used_callee_saved = get_used_callee_saved()
+        for reg in vec_reverse(used_callee_saved) {
+          let offset = get_callee_save_offset(reg)
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(format("{}(%rbp)", offset), format("%{}", reg))
+          }
+        }
+
+        # Restore stack pointer
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rbp", "%rsp")
+        }
+
+        # Restore frame pointer
+        emit asm_instruction {
+          label: "",
+          mnemonic: "popq",
+          operands: vec_from("%rbp")
+        }
+
+        # Return
+        emit asm_instruction {
+          label: "",
+          mnemonic: "ret",
+          operands: vec_new()
+        }
+
+        state.asm_count = state.asm_count + 3 + vec_len(used_callee_saved)
+      }
+
+      rule calculate_frame_size() -> i32 {
+        # Calculate space needed:
+        # - Spill slots
+        # - Callee-saved registers
+        # - Local variables
+        # - Align to 16 bytes
+
+        let spill_space = -(state.next_spill_offset + 8)  # Total spill bytes
+        let callee_save_space = vec_len(get_used_callee_saved()) * 8
+        let total = spill_space + callee_save_space
+
+        # Align to 16 bytes
+        return ((total + 15) / 16) * 16
+      }
+
+      rule get_used_callee_saved() -> vec<string> {
+        let used: vec<string> = vec_new()
+        for vreg, preg in state.allocation {
+          if vec_contains(state.callee_saved_regs, preg) {
+            if !vec_contains(used, preg) {
+              vec_push(used, preg)
+            }
+          }
+        }
+        return used
+      }
+
+      rule get_callee_save_offset(reg: string) -> i32 {
+        # Callee-saved registers stored after spill slots
+        let used = get_used_callee_saved()
+        let idx = vec_index_of(used, reg)
+        return state.next_spill_offset - (idx * 8) - 8
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # INSTRUCTION TRANSLATION
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule translate_instruction(ir: IRInstruction, pos: u32) {
+        # Emit label if present
+        if ir.label != "" {
+          emit asm_instruction {
+            label: ir.label,
+            mnemonic: "",
+            operands: vec_new()
+          }
+        }
+
+        # Translate based on opcode
+        match ir.op {
+          IROpcode::LABEL => {
+            # Already handled above
+          }
+
+          IROpcode::MOVE => {
+            translate_move(ir)
+          }
+
+          IROpcode::CONST => {
+            translate_const(ir)
+          }
+
+          IROpcode::LOAD => {
+            translate_load(ir)
+          }
+
+          IROpcode::STORE => {
+            translate_store(ir)
+          }
+
+          IROpcode::LOAD_FIELD => {
+            translate_load_field(ir)
+          }
+
+          IROpcode::STORE_FIELD => {
+            translate_store_field(ir)
+          }
+
+          IROpcode::ADD => {
+            translate_binop(ir, "addq")
+          }
+
+          IROpcode::SUB => {
+            translate_binop(ir, "subq")
+          }
+
+          IROpcode::MUL => {
+            translate_mul(ir)
+          }
+
+          IROpcode::DIV => {
+            translate_div(ir, false)  # Quotient
+          }
+
+          IROpcode::MOD => {
+            translate_div(ir, true)   # Remainder
+          }
+
+          IROpcode::NEG => {
+            translate_neg(ir)
+          }
+
+          IROpcode::AND => {
+            translate_binop(ir, "andq")
+          }
+
+          IROpcode::OR => {
+            translate_binop(ir, "orq")
+          }
+
+          IROpcode::XOR => {
+            translate_binop(ir, "xorq")
+          }
+
+          IROpcode::NOT => {
+            translate_not(ir)
+          }
+
+          IROpcode::SHL => {
+            translate_shift(ir, "shlq")
+          }
+
+          IROpcode::SHR => {
+            translate_shift(ir, "shrq")
+          }
+
+          IROpcode::CMP_EQ => {
+            translate_cmp(ir, "sete")
+          }
+
+          IROpcode::CMP_NE => {
+            translate_cmp(ir, "setne")
+          }
+
+          IROpcode::CMP_LT => {
+            translate_cmp(ir, "setl")
+          }
+
+          IROpcode::CMP_LE => {
+            translate_cmp(ir, "setle")
+          }
+
+          IROpcode::CMP_GT => {
+            translate_cmp(ir, "setg")
+          }
+
+          IROpcode::CMP_GE => {
+            translate_cmp(ir, "setge")
+          }
+
+          IROpcode::JUMP => {
+            translate_jump(ir)
+          }
+
+          IROpcode::BRANCH => {
+            translate_branch(ir)
+          }
+
+          IROpcode::RET => {
+            translate_ret(ir)
+          }
+
+          IROpcode::CALL => {
+            translate_call(ir)
+          }
+
+          IROpcode::ALLOC => {
+            translate_alloc(ir)
+          }
+
+          IROpcode::FREE => {
+            translate_free(ir)
+          }
+
+          IROpcode::GET_FIELD_ADDR => {
+            translate_get_field_addr(ir)
+          }
+
+          IROpcode::BITCAST => {
+            # Bitcast is a no-op (same bits, different type)
+            translate_move(ir)
+          }
+
+          IROpcode::PHI => {
+            # PHI nodes handled during register allocation
+            # Should have been resolved already
+          }
+        }
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # INDIVIDUAL INSTRUCTION TRANSLATIONS
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule translate_move(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let src = get_operand(ir.src1)
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(src, dst)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_const(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let imm = ir.src1  # Immediate value
+
+        # Check if 64-bit immediate (needs movabs)
+        if is_large_immediate(imm) {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movabsq",
+            operands: vec_from(format("${}", imm), dst)
+          }
+        } else {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(format("${}", imm), dst)
+          }
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_load(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let addr = get_operand(ir.src1)
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(format("({})", addr), dst)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_store(ir: IRInstruction) {
+        let addr = get_operand(ir.dst)  # dst is actually the address
+        let src = get_operand(ir.src1)
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(src, format("({})", addr))
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_load_field(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let base = get_operand(ir.src1)
+        let offset = ir.src2  # Numeric offset
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(format("{}({})", offset, base), dst)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_store_field(ir: IRInstruction) {
+        let base = get_operand(ir.dst)
+        let offset = ir.src1  # Numeric offset
+        let src = get_operand(ir.src2)
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(src, format("{}({})", offset, base))
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_binop(ir: IRInstruction, mnemonic: string) {
+        let dst = get_operand(ir.dst)
+        let lhs = get_operand(ir.src1)
+        let rhs = get_operand(ir.src2)
+
+        # x86-64 is two-address: dst = dst op src
+        # So we need: mov dst, lhs; op dst, rhs
+        if dst != lhs {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(lhs, dst)
+          }
+          state.asm_count = state.asm_count + 1
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: mnemonic,
+          operands: vec_from(rhs, dst)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_mul(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let lhs = get_operand(ir.src1)
+        let rhs = get_operand(ir.src2)
+
+        # imul can use 3-operand form: imul src, dst
+        # Or we use: mov rax, lhs; imul rhs; mov dst, rax
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(lhs, "%rax")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "imulq",
+          operands: vec_from(rhs)
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rax", dst)
+        }
+        state.asm_count = state.asm_count + 3
+      }
+
+      rule translate_div(ir: IRInstruction, get_remainder: boolean) {
+        let dst = get_operand(ir.dst)
+        let lhs = get_operand(ir.src1)
+        let rhs = get_operand(ir.src2)
+
+        # idiv uses rax:rdx / src -> quotient in rax, remainder in rdx
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(lhs, "%rax")
+        }
+
+        # Sign-extend rax to rdx:rax
+        emit asm_instruction {
+          label: "",
+          mnemonic: "cqo",
+          operands: vec_new()
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "idivq",
+          operands: vec_from(rhs)
+        }
+
+        if get_remainder {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from("%rdx", dst)
+          }
+        } else {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from("%rax", dst)
+          }
+        }
+        state.asm_count = state.asm_count + 4
+      }
+
+      rule translate_neg(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let src = get_operand(ir.src1)
+
+        if dst != src {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(src, dst)
+          }
+          state.asm_count = state.asm_count + 1
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "negq",
+          operands: vec_from(dst)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_not(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let src = get_operand(ir.src1)
+
+        if dst != src {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(src, dst)
+          }
+          state.asm_count = state.asm_count + 1
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "notq",
+          operands: vec_from(dst)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_shift(ir: IRInstruction, mnemonic: string) {
+        let dst = get_operand(ir.dst)
+        let src = get_operand(ir.src1)
+        let amt = ir.src2  # Shift amount
+
+        if dst != src {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(src, dst)
+          }
+          state.asm_count = state.asm_count + 1
+        }
+
+        # Shift amount must be in cl or immediate
+        if is_immediate(amt) {
+          emit asm_instruction {
+            label: "",
+            mnemonic: mnemonic,
+            operands: vec_from(format("${}", amt), dst)
+          }
+        } else {
+          let amt_op = get_operand(amt)
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from(amt_op, "%rcx")
+          }
+          emit asm_instruction {
+            label: "",
+            mnemonic: mnemonic,
+            operands: vec_from("%cl", dst)
+          }
+          state.asm_count = state.asm_count + 1
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_cmp(ir: IRInstruction, set_instr: string) {
+        let dst = get_operand(ir.dst)
+        let lhs = get_operand(ir.src1)
+        let rhs = get_operand(ir.src2)
+
+        # Compare
+        emit asm_instruction {
+          label: "",
+          mnemonic: "cmpq",
+          operands: vec_from(rhs, lhs)
+        }
+
+        # Set byte based on condition
+        emit asm_instruction {
+          label: "",
+          mnemonic: set_instr,
+          operands: vec_from("%al")
+        }
+
+        # Zero-extend to 64-bit
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movzbq",
+          operands: vec_from("%al", dst)
+        }
+        state.asm_count = state.asm_count + 3
+      }
+
+      rule translate_jump(ir: IRInstruction) {
+        let target = ir.src1  # Label name
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "jmp",
+          operands: vec_from(target)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_branch(ir: IRInstruction) {
+        let cond = get_operand(ir.src1)
+        let true_label = ir.src2
+        let false_label = ir.dst  # Overloaded: dst holds false label
+
+        # Test condition
+        emit asm_instruction {
+          label: "",
+          mnemonic: "testq",
+          operands: vec_from(cond, cond)
+        }
+
+        # Jump if not zero (condition true)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "jnz",
+          operands: vec_from(true_label)
+        }
+
+        # Fall through or jump to false
+        emit asm_instruction {
+          label: "",
+          mnemonic: "jmp",
+          operands: vec_from(false_label)
+        }
+        state.asm_count = state.asm_count + 3
+      }
+
+      rule translate_ret(ir: IRInstruction) {
+        # Move return value to rax if present
+        if ir.src1 != "" {
+          let ret_val = get_operand(ir.src1)
+          if ret_val != "%rax" {
+            emit asm_instruction {
+              label: "",
+              mnemonic: "movq",
+              operands: vec_from(ret_val, "%rax")
+            }
+            state.asm_count = state.asm_count + 1
+          }
+        }
+
+        # Emit epilogue
+        emit_epilogue()
+      }
+
+      rule translate_call(ir: IRInstruction) {
+        let dst = ir.dst
+        let func_name = ir.src1
+        let args = parse_args(ir.src2)  # src2 contains comma-separated args
+
+        # Set up arguments in registers
+        let arg_idx = 0u32
+        for arg in args {
+          if arg_idx < 6 {
+            let arg_op = get_operand(arg)
+            let reg = state.arg_regs[arg_idx]
+            if arg_op != format("%{}", reg) {
+              emit asm_instruction {
+                label: "",
+                mnemonic: "movq",
+                operands: vec_from(arg_op, format("%{}", reg))
+              }
+              state.asm_count = state.asm_count + 1
+            }
+          } else {
+            # Stack argument
+            let arg_op = get_operand(arg)
+            emit asm_instruction {
+              label: "",
+              mnemonic: "pushq",
+              operands: vec_from(arg_op)
+            }
+            state.asm_count = state.asm_count + 1
+          }
+          arg_idx = arg_idx + 1
+        }
+
+        # Call function
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from(func_name)
+        }
+        state.asm_count = state.asm_count + 1
+
+        # Clean up stack args if any
+        if arg_idx > 6 {
+          let stack_bytes = (arg_idx - 6) * 8
+          emit asm_instruction {
+            label: "",
+            mnemonic: "addq",
+            operands: vec_from(format("${}", stack_bytes), "%rsp")
+          }
+          state.asm_count = state.asm_count + 1
+        }
+
+        # Move result to destination
+        if dst != "" {
+          let dst_op = get_operand(dst)
+          if dst_op != "%rax" {
+            emit asm_instruction {
+              label: "",
+              mnemonic: "movq",
+              operands: vec_from("%rax", dst_op)
+            }
+            state.asm_count = state.asm_count + 1
+          }
+        }
+      }
+
+      rule translate_alloc(ir: IRInstruction) {
+        let dst = ir.dst
+        let size = ir.src1
+
+        # Call runtime_alloc(size)
+        let size_op = get_operand(size)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(size_op, "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("runtime_alloc")
+        }
+
+        let dst_op = get_operand(dst)
+        if dst_op != "%rax" {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from("%rax", dst_op)
+          }
+          state.asm_count = state.asm_count + 1
+        }
+        state.asm_count = state.asm_count + 2
+      }
+
+      rule translate_free(ir: IRInstruction) {
+        let ptr = get_operand(ir.src1)
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(ptr, "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("runtime_free")
+        }
+        state.asm_count = state.asm_count + 2
+      }
+
+      rule translate_get_field_addr(ir: IRInstruction) {
+        let dst = get_operand(ir.dst)
+        let base = get_operand(ir.src1)
+        let offset = ir.src2
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "leaq",
+          operands: vec_from(format("{}({})", offset, base), dst)
+        }
+        state.asm_count = state.asm_count + 1
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # HELPER FUNCTIONS
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule get_operand(vreg: string) -> string {
+        # Check if it's a parameter (special handling)
+        if starts_with(vreg, "%param") {
+          let idx = parse_param_index(vreg)
+          if idx < 6 {
+            return format("%{}", state.arg_regs[idx])
+          } else {
+            # Stack parameter
+            let offset = 16 + (idx - 6) * 8
+            return format("{}(%rbp)", offset)
+          }
+        }
+
+        # Check if allocated to a register
+        if map_has(state.allocation, vreg) {
+          return format("%{}", map_get(state.allocation, vreg))
+        }
+
+        # Check if spilled to stack
+        if map_has(state.spill_slots, vreg) {
+          let offset = map_get(state.spill_slots, vreg)
+          return format("{}(%rbp)", offset)
+        }
+
+        # Unknown - return as-is (might be a label or immediate)
+        return vreg
+      }
+
+      rule is_immediate(s: string) -> boolean {
+        return starts_with(s, "$") || is_numeric(s)
+      }
+
+      rule is_label(s: string) -> boolean {
+        return starts_with(s, ".") || starts_with(s, "_")
+      }
+
+      rule is_large_immediate(s: string) -> boolean {
+        let val = parse_i64(s)
+        return val > 2147483647 || val < -2147483648
+      }
+
+      rule parse_args(args_str: string) -> vec<string> {
+        if args_str == "" {
+          return vec_new()
+        }
+        return string_split(args_str, ",")
+      }
+
+      rule parse_param_index(param: string) -> u32 {
+        # %param0 -> 0, %param1 -> 1, etc.
+        let suffix = string_slice(param, 6, string_len(param))
+        return parse_u32(suffix)
+      }
+    }
+  }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TOPOLOGY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  topology {
+    spawn x86_codegen as CodeGen
+
+    # Input: Receive IR from IR Generator
+    socket ir_input -> CodeGen (frequency: ir_node)
+    socket ir_func_start -> CodeGen (frequency: ir_function_start)
+    socket ir_func_end -> CodeGen (frequency: ir_function_end)
+    socket ir_done -> CodeGen (frequency: ir_complete)
+
+    # Output: Send assembly to Assembler
+    socket CodeGen -> asm_output (frequency: asm_instruction)
+    socket CodeGen -> asm_data_output (frequency: asm_data)
+    socket CodeGen -> codegen_done (frequency: codegen_complete)
+  }
+}

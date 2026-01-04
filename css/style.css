@@ -1,0 +1,723 @@
+/* ===================================================================
+   Mycelial Web Playground - Main Stylesheet
+   Colors: Huntsman Green (#355E3B), Black, White
+   =================================================================== */
+
+:root {
+    /* Color System */
+    --color-primary: #355E3B;      /* Huntsman Green */
+    --color-primary-light: #4A7C59;
+    --color-primary-dark: #2A4B2F;
+    --color-black: #000000;
+    --color-off-black: #0F0F0F;
+    --color-dark-gray: #1A1A1A;
+    --color-gray: #333333;
+    --color-light-gray: #666666;
+    --color-white: #FFFFFF;
+
+    /* Typography */
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-code: 'JetBrains Mono', 'Fira Code', monospace;
+
+    /* Spacing */
+    --space-xs: 8px;
+    --space-sm: 16px;
+    --space-md: 24px;
+    --space-lg: 32px;
+    --space-xl: 48px;
+    --space-xxl: 64px;
+
+    /* Border Radius */
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+
+    /* Transitions */
+    --transition-fast: 150ms ease-in-out;
+    --transition-normal: 300ms ease-in-out;
+    --transition-slow: 500ms ease-in-out;
+
+    /* Shadows */
+    --shadow-sm: 0 2px 4px rgba(0,0,0,0.3);
+    --shadow-md: 0 4px 8px rgba(0,0,0,0.4);
+    --shadow-lg: 0 8px 16px rgba(0,0,0,0.5);
+    --shadow-glow: 0 0 20px rgba(53,94,59,0.5);
+}
+
+/* ===================================================================
+   Reset & Base Styles
+   =================================================================== */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+    font-size: 16px;
+}
+
+body {
+    font-family: var(--font-body);
+    background: var(--color-black);
+    color: var(--color-white);
+    line-height: 1.6;
+    overflow-x: hidden;
+}
+
+a {
+    text-decoration: none;
+    color: inherit;
+    transition: color var(--transition-fast);
+}
+
+a:hover {
+    color: var(--color-primary);
+}
+
+/* ===================================================================
+   Typography
+   =================================================================== */
+
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+h1 { font-size: 3rem; }
+h2 { font-size: 2.5rem; }
+h3 { font-size: 2rem; }
+h4 { font-size: 1.5rem; }
+h5 { font-size: 1.25rem; }
+h6 { font-size: 1rem; }
+
+code {
+    font-family: var(--font-code);
+    background: var(--color-dark-gray);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    font-size: 0.9em;
+}
+
+pre {
+    font-family: var(--font-code);
+    background: var(--color-off-black);
+    padding: var(--space-md);
+    border-radius: var(--radius-md);
+    overflow-x: auto;
+    line-height: 1.5;
+}
+
+/* ===================================================================
+   Layout Containers
+   =================================================================== */
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 var(--space-md);
+}
+
+.container-full {
+    width: 100%;
+    padding: 0 var(--space-md);
+}
+
+/* ===================================================================
+   Navigation Bar
+   =================================================================== */
+
+.nav-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: rgba(0,0,0,0.95);
+    backdrop-filter: blur(10px);
+    z-index: 1000;
+    border-bottom: 1px solid rgba(53,94,59,0.2);
+}
+
+.nav-content {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: var(--space-sm) var(--space-md);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.nav-left, .nav-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+}
+
+.logo-link {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-weight: 700;
+    font-size: 1.25rem;
+}
+
+.logo-icon {
+    font-size: 1.5rem;
+}
+
+.nav-link {
+    font-weight: 500;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    transition: background var(--transition-fast);
+}
+
+.nav-link:hover {
+    background: var(--color-dark-gray);
+}
+
+/* ===================================================================
+   Hero Section
+   =================================================================== */
+
+.hero {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    overflow: hidden;
+}
+
+.hero-background {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 0;
+}
+
+#network-canvas {
+    width: 100%;
+    height: 100%;
+}
+
+.hero-content {
+    position: relative;
+    z-index: 1;
+    max-width: 900px;
+    padding: var(--space-xxl) var(--space-md);
+}
+
+.hero-title {
+    font-size: 4rem;
+    font-weight: 800;
+    margin-bottom: var(--space-md);
+    background: linear-gradient(135deg, var(--color-white) 0%, var(--color-primary-light) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.hero-subtitle {
+    font-size: 1.5rem;
+    color: var(--color-light-gray);
+    margin-bottom: var(--space-xl);
+    line-height: 1.6;
+}
+
+.hero-cta {
+    display: flex;
+    gap: var(--space-md);
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.scroll-indicator {
+    position: absolute;
+    bottom: var(--space-lg);
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    color: var(--color-light-gray);
+    z-index: 1;
+}
+
+.scroll-arrow {
+    font-size: 1.5rem;
+    animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(10px); }
+}
+
+/* ===================================================================
+   Buttons
+   =================================================================== */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-sm) var(--space-md);
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    border: none;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.btn-primary {
+    background: var(--color-primary);
+    color: var(--color-white);
+}
+
+.btn-primary:hover {
+    background: var(--color-primary-light);
+    box-shadow: var(--shadow-glow);
+}
+
+.btn-secondary {
+    background: transparent;
+    color: var(--color-white);
+    border: 2px solid var(--color-primary);
+}
+
+.btn-secondary:hover {
+    background: var(--color-primary);
+    color: var(--color-white);
+}
+
+.btn-large {
+    padding: var(--space-md) var(--space-lg);
+    font-size: 1.125rem;
+}
+
+.btn-copy {
+    background: var(--color-dark-gray);
+    color: var(--color-light-gray);
+    padding: var(--space-xs) var(--space-sm);
+    font-size: 0.875rem;
+}
+
+.btn-copy:hover {
+    background: var(--color-gray);
+    color: var(--color-white);
+}
+
+/* ===================================================================
+   Sections
+   =================================================================== */
+
+.section {
+    padding: var(--space-xxl) 0;
+}
+
+.section-dark {
+    background: var(--color-black);
+}
+
+.section-demo {
+    background: var(--color-off-black);
+}
+
+.section-examples {
+    background: var(--color-dark-gray);
+}
+
+.section-docs {
+    background: var(--color-off-black);
+}
+
+.section-header {
+    text-align: center;
+    margin-bottom: var(--space-xl);
+}
+
+.section-title {
+    margin-bottom: var(--space-sm);
+}
+
+.section-subtitle {
+    font-size: 1.25rem;
+    color: var(--color-light-gray);
+}
+
+/* ===================================================================
+   Comparison Grid
+   =================================================================== */
+
+.comparison-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--space-lg);
+    margin-bottom: var(--space-xl);
+}
+
+.comparison-card {
+    background: var(--color-off-black);
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    border: 2px solid var(--color-gray);
+}
+
+.comparison-list {
+    list-style: none;
+    margin-top: var(--space-md);
+}
+
+.comparison-list li {
+    padding: var(--space-sm) 0;
+    padding-left: var(--space-lg);
+    position: relative;
+}
+
+.comparison-list.negative li::before {
+    content: '✗';
+    position: absolute;
+    left: 0;
+    color: #ff4444;
+}
+
+.comparison-list.positive li::before {
+    content: '✓';
+    position: absolute;
+    left: 0;
+    color: var(--color-primary);
+}
+
+/* ===================================================================
+   Code Example
+   =================================================================== */
+
+.code-example {
+    background: var(--color-off-black);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 1px solid var(--color-gray);
+    margin-bottom: var(--space-xl);
+}
+
+.code-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-dark-gray);
+    border-bottom: 1px solid var(--color-gray);
+}
+
+.code-title {
+    font-family: var(--font-code);
+    color: var(--color-primary-light);
+}
+
+.code-example pre {
+    margin: 0;
+    border-radius: 0;
+}
+
+/* ===================================================================
+   Benefits Grid
+   =================================================================== */
+
+.benefits-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--space-lg);
+}
+
+.benefit-card {
+    text-align: center;
+    padding: var(--space-lg);
+}
+
+.benefit-icon {
+    font-size: 3rem;
+    margin-bottom: var(--space-md);
+}
+
+.benefit-card h3 {
+    margin-bottom: var(--space-sm);
+    color: var(--color-primary-light);
+}
+
+/* ===================================================================
+   Features Grid
+   =================================================================== */
+
+.features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--space-md);
+}
+
+.feature-card {
+    background: var(--color-off-black);
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-gray);
+    transition: all var(--transition-normal);
+}
+
+.feature-card:hover {
+    border-color: var(--color-primary);
+    box-shadow: var(--shadow-glow);
+}
+
+.feature-card h3 {
+    margin-bottom: var(--space-sm);
+}
+
+/* ===================================================================
+   Examples Grid
+   =================================================================== */
+
+.examples-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--space-lg);
+}
+
+.example-card {
+    background: var(--color-off-black);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    border: 2px solid var(--color-gray);
+    transition: all var(--transition-normal);
+    cursor: pointer;
+}
+
+.example-card:hover {
+    border-color: var(--color-primary);
+    box-shadow: var(--shadow-glow);
+    transform: translateY(-4px);
+}
+
+.example-header {
+    margin-bottom: var(--space-md);
+}
+
+.example-title {
+    margin-bottom: var(--space-xs);
+    color: var(--color-primary-light);
+}
+
+.example-difficulty {
+    display: inline-block;
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-dark-gray);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.example-description {
+    color: var(--color-light-gray);
+    margin-bottom: var(--space-md);
+}
+
+.example-code-preview {
+    font-family: var(--font-code);
+    font-size: 0.875rem;
+    background: var(--color-dark-gray);
+    padding: var(--space-sm);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    max-height: 120px;
+    color: var(--color-light-gray);
+}
+
+/* ===================================================================
+   Documentation Grid
+   =================================================================== */
+
+.docs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--space-md);
+}
+
+.doc-card {
+    background: var(--color-dark-gray);
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-gray);
+    transition: all var(--transition-normal);
+    display: block;
+}
+
+.doc-card:hover {
+    border-color: var(--color-primary);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.doc-icon {
+    font-size: 2rem;
+    margin-bottom: var(--space-sm);
+}
+
+.doc-card h3 {
+    margin-bottom: var(--space-xs);
+    color: var(--color-white);
+}
+
+.doc-card p {
+    color: var(--color-light-gray);
+}
+
+/* ===================================================================
+   Playground Embed
+   =================================================================== */
+
+.playground-embed {
+    background: var(--color-off-black);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 2px solid var(--color-primary);
+    box-shadow: var(--shadow-lg);
+}
+
+.playground-frame {
+    width: 100%;
+    height: 600px;
+    border: none;
+}
+
+.playground-link {
+    text-align: center;
+    margin-top: var(--space-md);
+}
+
+/* ===================================================================
+   Demo Section
+   =================================================================== */
+
+.demo-container {
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.demo-visual {
+    background: var(--color-dark-gray);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    margin-bottom: var(--space-md);
+}
+
+.demo-controls {
+    display: flex;
+    justify-content: center;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+}
+
+.demo-explanation {
+    background: var(--color-dark-gray);
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+}
+
+.demo-explanation ol {
+    margin-top: var(--space-sm);
+    padding-left: var(--space-lg);
+}
+
+.demo-explanation li {
+    margin-bottom: var(--space-xs);
+}
+
+/* ===================================================================
+   Footer
+   =================================================================== */
+
+.footer {
+    background: var(--color-off-black);
+    border-top: 1px solid var(--color-gray);
+    padding: var(--space-xl) 0 var(--space-lg);
+}
+
+.footer-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-lg);
+}
+
+.footer-brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-weight: 700;
+    font-size: 1.25rem;
+}
+
+.footer-links {
+    display: flex;
+    gap: var(--space-lg);
+}
+
+.footer-links a:hover {
+    color: var(--color-primary);
+}
+
+.footer-bottom {
+    text-align: center;
+    color: var(--color-light-gray);
+    font-size: 0.875rem;
+}
+
+.footer-bottom p {
+    margin-bottom: var(--space-xs);
+}
+
+/* ===================================================================
+   Responsive Design
+   =================================================================== */
+
+@media (max-width: 768px) {
+    h1 { font-size: 2.5rem; }
+    h2 { font-size: 2rem; }
+    h3 { font-size: 1.5rem; }
+
+    .hero-title {
+        font-size: 2.5rem;
+    }
+
+    .hero-subtitle {
+        font-size: 1.125rem;
+    }
+
+    .hero-cta {
+        flex-direction: column;
+    }
+
+    .comparison-grid,
+    .benefits-grid,
+    .features-grid,
+    .examples-grid,
+    .docs-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .footer-content {
+        flex-direction: column;
+        gap: var(--space-md);
+        text-align: center;
+    }
+
+    .playground-frame {
+        height: 500px;
+    }
+}
