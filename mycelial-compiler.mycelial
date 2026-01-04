@@ -1,11 +1,20 @@
 # Mycelial Native Compiler - Main Orchestration File
-# Wires together all 5 compiler agents into a complete compilation pipeline
+# Wires together all 7 compiler agents into a complete compilation pipeline
 #
-# Pipeline: Source Code -> Lexer -> Parser -> IR Generator -> Code Generator -> Assembler -> Linker -> ELF Binary
+# Pipeline: Source Code -> Lexer -> Parser -> Type Checker -> IR Generator -> Code Generator -> Assembler -> Linker -> ELF Binary
 #
 # Author: Opus (Claude Opus 4.5)
 # Date: 2026-01-01
-# Status: M1 Complete Pipeline Orchestration
+# Status: M1 Complete Pipeline Orchestration with Module Imports
+
+# Import all 7 compiler agents from separate modules
+import "compiler/lexer.mycelial"
+import "compiler/parser.mycelial"
+import "compiler/type_checker.mycelial"
+import "compiler/ir_generator.mycelial"
+import "compiler/x86_codegen.mycelial"
+import "compiler/assembler.mycelial"
+import "compiler/linker.mycelial"
 
 network mycelial_compiler {
 
@@ -834,12 +843,14 @@ network mycelial_compiler {
   #
   # Total agent code: 7,718 lines
   #
-  # Note: In the Mycelial runtime, these would be imported with:
-  #   import "/compiler/parser.mycelial" as parser
-  #   import "/compiler/ir_generator.mycelial" as ir_generator
-  #   import "/compiler/x86_codegen.mycelial" as codegen
-  #   import "/compiler/assembler.mycelial" as assembler
-  #   import "/compiler/linker.mycelial" as linker
+  # Note: These agents are loaded via module system at the top of this file
+  #   - compiler/lexer.mycelial
+  #   - compiler/parser.mycelial
+  #   - compiler/type_checker.mycelial
+  #   - compiler/ir_generator.mycelial
+  #   - compiler/x86_codegen.mycelial
+  #   - compiler/assembler.mycelial
+  #   - compiler/linker.mycelial
   #
   # For this orchestration file, the agents are referenced by their
   # hyphal names and will be loaded by the runtime.
@@ -1443,7 +1454,7 @@ network mycelial_compiler {
     spawn parser as P1                  # AST construction (1,972 lines)
     spawn type_checker as TC1           # Type validation (1,436 lines)
     spawn ir_generator as IR1           # IR lowering (1,651 lines)
-    spawn codegen as CG1                # x86-64 code generation (1,230 lines)
+    spawn x86_codegen as CG1            # x86-64 code generation (1,230 lines)
     spawn assembler as AS1              # Machine code encoding (1,815 lines)
     spawn linker as LK1                 # ELF binary creation (1,050 lines)
 

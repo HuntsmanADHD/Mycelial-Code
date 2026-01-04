@@ -35,3 +35,6 @@ logs/
 temp/
 tmp/
 *.tmp
+*.elf
+/PROJECT_OVERVIEW.md
+/QUICK_SUMMARY.md
