@@ -1,0 +1,96 @@
+# Signal Operations Test Program
+# Tests basic signal emit and receive functionality
+#
+# Purpose: Validate M2 Phase 2 signal operation compiler updates
+# Expected: Compiles to x86-64 with signal allocation, payload, and emit calls
+
+network signal_test {
+
+  # Define signal frequencies
+  frequencies {
+    # Simple ping signal with a value
+    ping {
+      value: u32
+    }
+
+    # Response signal
+    pong {
+      result: u32
+    }
+
+    # Start trigger
+    start {
+      initial_value: u32
+    }
+  }
+
+  # Define agent types
+  hyphae {
+    # Sender agent: receives start signal, emits ping
+    hyphal sender {
+      state {
+        count: u32
+      }
+
+      on signal(start, s) {
+        # Emit ping signal with value from start
+        emit ping {
+          value: s.initial_value
+        }
+
+        # Update state
+        state.count = 1
+      }
+    }
+
+    # Receiver agent: receives ping, emits pong
+    hyphal receiver {
+      state {
+        received: u32
+        processed: boolean
+      }
+
+      on signal(ping, p) {
+        # Store received value
+        state.received = p.value
+
+        # Process: double the value
+        let result = p.value * 2
+
+        # Emit pong signal
+        emit pong {
+          result: result
+        }
+
+        # Mark as processed
+        state.processed = true
+      }
+    }
+
+    # Monitor agent: receives pong and reports
+    hyphal monitor {
+      state {
+        final_result: u32
+        done: boolean
+      }
+
+      on signal(pong, p) {
+        # Store final result
+        state.final_result = p.result
+
+        # Mark as done
+        state.done = true
+      }
+    }
+  }
+
+  # Network topology
+  topology {
+    spawn sender as S1
+    spawn receiver as R1
+    spawn monitor as M1
+
+    socket from S1 to R1 (frequency: ping)
+    socket from R1 to M1 (frequency: pong)
+  }
+}

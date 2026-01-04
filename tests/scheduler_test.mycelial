@@ -1,0 +1,86 @@
+# Scheduler Test Program
+# M2 Phase 5 - Tidal Cycle Scheduler
+#
+# Test flow:
+#   1. Controller emits tick signal
+#   2. Producer receives tick, increments count, emits data
+#   3. Consumer receives data and accumulates total
+#   4. After 10 ticks, producer stops emitting
+#   5. Expected: consumer.total = 1+2+3+...+9 = 45
+
+network scheduler_test {
+  frequencies {
+    # Start signal from controller
+    start {}
+
+    # Tick signal to producer
+    tick {}
+
+    # Data signal from producer to consumer
+    data {
+      value: u32
+    }
+  }
+
+  hyphae {
+    # Controller: Kicks off the test by emitting tick
+    hyphal controller {
+      state {
+        started: boolean
+      }
+
+      on signal(start, _) {
+        if !state.started {
+          state.started = true
+          emit tick {}
+        }
+      }
+    }
+
+    # Producer: Receives tick, emits data with incrementing count
+    hyphal producer {
+      state {
+        count: u32
+      }
+
+      on signal(tick, _) {
+        state.count = state.count + 1
+
+        # Emit data for first 10 ticks
+        if state.count < 10 {
+          emit data { value: state.count }
+        }
+      }
+    }
+
+    # Consumer: Accumulates total from data signals
+    hyphal consumer {
+      state {
+        total: u32
+        received_count: u32
+      }
+
+      on signal(data, d) {
+        state.total = state.total + d.value
+        state.received_count = state.received_count + 1
+
+        # Continue the cycle by emitting tick back to producer
+        if state.received_count < 9 {
+          emit tick {}
+        }
+      }
+    }
+  }
+
+  topology {
+    # Spawn agent instances
+    spawn controller as C1
+    spawn producer as P1
+    spawn consumer as S1
+
+    # Wire up signal routing
+    socket from C1 to P1 (frequency: tick)
+    socket from P1 to S1 (frequency: data)
+    socket from S1 to P1 (frequency: tick)
+  }
+}

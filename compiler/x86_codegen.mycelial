@@ -87,7 +87,9 @@ network x86_codegen {
       # Control flow
       JUMP, BRANCH, RET, CALL,
       # Special
-      ALLOC, FREE, PHI, GET_FIELD_ADDR, BITCAST, LABEL
+      ALLOC, FREE, PHI, GET_FIELD_ADDR, BITCAST, LABEL,
+      # M2 Phase 2: Signal operations
+      SIGNAL_ALLOC, SIGNAL_SET_PAYLOAD, SIGNAL_SET_FIELD, SIGNAL_EMIT
     }
 
     struct Param {
@@ -210,6 +212,9 @@ network x86_codegen {
       }
 
       on signal(ir_complete, irc) {
+        # M2 Phase 5: Generate main() entry point
+        generate_main_function()
+
         # All IR received - emit completion signal
         emit codegen_complete {
           instruction_count: state.asm_count,
@@ -676,6 +681,23 @@ network x86_codegen {
           IROpcode::PHI => {
             # PHI nodes handled during register allocation
             # Should have been resolved already
+          }
+
+          # M2 Phase 2: Signal operation handlers
+          IROpcode::SIGNAL_ALLOC => {
+            translate_signal_alloc(ir)
+          }
+
+          IROpcode::SIGNAL_SET_PAYLOAD => {
+            translate_signal_set_payload(ir)
+          }
+
+          IROpcode::SIGNAL_SET_FIELD => {
+            translate_signal_set_field(ir)
+          }
+
+          IROpcode::SIGNAL_EMIT => {
+            translate_signal_emit(ir)
           }
         }
       }
@@ -1147,6 +1169,336 @@ network x86_codegen {
           operands: vec_from(format("{}({})", offset, base), dst)
         }
         state.asm_count = state.asm_count + 1
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # M2 PHASE 2: SIGNAL OPERATION TRANSLATIONS
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule translate_signal_alloc(ir: IRInstruction) {
+        # SIGNAL_ALLOC: Allocate 32-byte signal header
+        # dst = signal variable
+        # src1 = frequency_id
+        # src2 = source_agent_id
+
+        let dst = ir.dst
+        let freq_id = ir.src1
+        let agent_id = ir.src2
+
+        # Allocate 32 bytes for signal struct (M2 Signal Runtime Spec)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("$32", "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("heap_allocate")
+        }
+
+        # Save signal pointer to destination
+        let dst_op = get_operand(dst)
+        if dst_op != "%rax" {
+          emit asm_instruction {
+            label: "",
+            mnemonic: "movq",
+            operands: vec_from("%rax", dst_op)
+          }
+          state.asm_count = state.asm_count + 1
+        }
+
+        # Store frequency_id at offset 0 (u16)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movw",
+          operands: vec_from(format("${}", freq_id), format("0({})", dst_op))
+        }
+
+        # Store source_agent_id at offset 2 (u16)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movw",
+          operands: vec_from(format("${}", agent_id), format("2({})", dst_op))
+        }
+
+        # Initialize ref_count to 1 at offset 6 (u16)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movw",
+          operands: vec_from("$1", format("6({})", dst_op))
+        }
+
+        # Get timestamp (RDTSC)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "rdtsc",
+          operands: vec_new()
+        }
+
+        # Combine EDX:EAX into RAX
+        emit asm_instruction {
+          label: "",
+          mnemonic: "shlq",
+          operands: vec_from("$32", "%rdx")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "orq",
+          operands: vec_from("%rdx", "%rax")
+        }
+
+        # Store timestamp at offset 24 (u64)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rax", format("24({})", dst_op))
+        }
+
+        state.asm_count = state.asm_count + 9
+      }
+
+      rule translate_signal_set_payload(ir: IRInstruction) {
+        # SIGNAL_SET_PAYLOAD: Attach payload to signal
+        # src1 = signal variable
+        # src2 = payload variable
+        # type_size = payload size (stored in type_size field)
+
+        let signal = get_operand(ir.src1)
+        let payload = get_operand(ir.src2)
+        let payload_size = ir.type_size
+
+        # Store payload_ptr at signal offset 8 (u64)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(payload, format("8({})", signal))
+        }
+
+        # Store payload_size at signal offset 16 (u32)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movl",
+          operands: vec_from(format("${}", payload_size), format("16({})", signal))
+        }
+
+        # Store payload_capacity at signal offset 20 (u32)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movl",
+          operands: vec_from(format("${}", payload_size), format("20({})", signal))
+        }
+
+        state.asm_count = state.asm_count + 3
+      }
+
+      rule translate_signal_set_field(ir: IRInstruction) {
+        # SIGNAL_SET_FIELD: Store field value in payload struct
+        # src1 = payload variable
+        # src2 = value variable
+        # type_size = field offset
+
+        let payload = get_operand(ir.src1)
+        let value = get_operand(ir.src2)
+        let offset = ir.type_size
+
+        # Store value at payload + offset
+        # Use 8-byte mov (assuming pointer/u64 for now)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(value, format("{}({})", offset, payload))
+        }
+
+        state.asm_count = state.asm_count + 1
+      }
+
+      rule translate_signal_emit(ir: IRInstruction) {
+        # SIGNAL_EMIT: Route and broadcast signal
+        # src1 = signal variable
+        # src2 = frequency_id
+
+        let signal = get_operand(ir.src1)
+        let freq_id = ir.src2
+
+        # Load routing table pointer into RDI (1st arg)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("routing_table(%rip)", "%rdi")
+        }
+
+        # Load signal pointer into RSI (2nd arg)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from(signal, "%rsi")
+        }
+
+        # Load agent registry pointer into RDX (3rd arg)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("agent_registry(%rip)", "%rdx")
+        }
+
+        # Call routing_broadcast(routing_table, signal, agents)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("routing_broadcast")
+        }
+
+        state.asm_count = state.asm_count + 4
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # M2 PHASE 5: MAIN FUNCTION GENERATION
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule generate_main_function() {
+        # Generate main() entry point that initializes runtime and starts scheduler
+        # Based on M2_PHASE5_TIDAL_CYCLE_SCHEDULER_SPEC.md
+
+        # Function label
+        emit asm_instruction {
+          label: "main",
+          mnemonic: "",
+          operands: vec_new()
+        }
+
+        # Prologue - set up stack frame
+        emit asm_instruction {
+          label: "",
+          mnemonic: "pushq",
+          operands: vec_from("%rbp")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rsp", "%rbp")
+        }
+
+        # Initialize heap allocator
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("heap_init")
+        }
+
+        # Create agent registry
+        # TODO: Get num_agents from topology compilation (Phase 4)
+        # For now, assume global symbol provided by Phase 4
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("num_agents(%rip)", "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("registry_create")
+        }
+
+        # Save registry pointer to global
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rax", "global_registry(%rip)")
+        }
+
+        # Initialize all agents (function generated by Phase 4)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("init_agents")
+        }
+
+        # Initialize routing tables (function generated by Phase 4)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("init_routing_tables")
+        }
+
+        # Create scheduler
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("global_registry(%rip)", "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("global_routing_table(%rip)", "%rsi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("scheduler_create")
+        }
+
+        # Save scheduler pointer to global
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rax", "global_scheduler(%rip)")
+        }
+
+        # Run scheduler (main event loop)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("global_scheduler(%rip)", "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("scheduler_run")
+        }
+
+        # Clean up - destroy scheduler
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("global_scheduler(%rip)", "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("scheduler_destroy")
+        }
+
+        # Return 0
+        emit asm_instruction {
+          label: "",
+          mnemonic: "xorq",
+          operands: vec_from("%rax", "%rax")
+        }
+
+        # Epilogue
+        emit asm_instruction {
+          label: "",
+          mnemonic: "popq",
+          operands: vec_from("%rbp")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "ret",
+          operands: vec_new()
+        }
+
+        state.asm_count = state.asm_count + 20
+        state.function_count = state.function_count + 1
       }
 
       # ─────────────────────────────────────────────────────────────────────────

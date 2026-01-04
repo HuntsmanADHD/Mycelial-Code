@@ -342,7 +342,12 @@ network ir_generator {
       Call(CallInst),
       Const(ConstInst),
       GetFieldAddr(GetFieldAddrInst),
-      Alloc(AllocInst)
+      Alloc(AllocInst),
+      # M2 Phase 2: Signal Operation Instructions
+      SignalAlloc(SignalAllocInst),
+      SignalSetPayload(SignalSetPayloadInst),
+      SignalSetField(SignalSetFieldInst),
+      SignalEmit(SignalEmitInst)
     }
 
     struct MoveInst {
@@ -419,6 +424,31 @@ network ir_generator {
       size: u32
     }
 
+    # M2 Phase 2: Signal Operation Instruction Structures
+
+    struct SignalAllocInst {
+      dst: string              # Result variable name (e.g., "signal_1")
+      frequency_id: u32        # Frequency ID for this signal type
+      source_agent_id: u32     # ID of the agent emitting this signal
+    }
+
+    struct SignalSetPayloadInst {
+      signal: string           # Signal variable containing the signal pointer
+      payload: string          # Payload variable containing payload pointer
+      payload_size: u32        # Size of payload struct in bytes
+    }
+
+    struct SignalSetFieldInst {
+      payload: string          # Payload variable
+      field_offset: u32        # Byte offset of field within payload struct
+      value: string            # Variable containing value to store
+    }
+
+    struct SignalEmitInst {
+      signal: string           # Signal variable to emit
+      frequency_id: u32        # Frequency ID (for routing lookup)
+    }
+
     enum Terminator {
       Jump(JumpTerm),
       Branch(BranchTerm),
@@ -456,6 +486,10 @@ network ir_generator {
       current_trigger_frequency: string
       temp_counter: u32
       label_counter: u32
+      # M2 Phase 2: Signal operation counters
+      signal_counter: u32
+      payload_counter: u32
+      current_agent_id: u32
       frequency_map: map<string, u32>
       struct_layouts: map<string, StructLayout>
       local_vars: map<string, string>
@@ -567,6 +601,10 @@ network ir_generator {
           current_trigger_frequency: "",
           temp_counter: 0,
           label_counter: 0,
+          # M2 Phase 2: Initialize signal operation counters
+          signal_counter: 0,
+          payload_counter: 0,
+          current_agent_id: 1,  # TODO: Get from topology/network context
           frequency_map: map_new(),
           struct_layouts: map_new(),
           local_vars: map_new()
@@ -1037,42 +1075,52 @@ network ir_generator {
       }
 
       rule lower_emit_statement(stmt: EmitStatement) {
-        # 1. Allocate signal struct
+        # M2 Phase 2: Updated to use signal-specific IR instructions
+
+        # 1. Get frequency ID and layout information
         let freq_id = map_get(state.context.frequency_map, stmt.frequency)
         let struct_name = format("Signal_{}", stmt.frequency)
         let layout = map_get(state.context.struct_layouts, struct_name)
+        let source_agent_id = get_current_agent_id()
 
-        let sig_ptr = fresh_temp()
-        add_instruction(Instruction::Call(CallInst {
-          dst: sig_ptr,
-          func: "runtime_alloc_signal",
-          args: vec_from([freq_id, layout.total_size])
+        # 2. Allocate signal struct (32-byte header)
+        let sig_var = fresh_signal_var()
+        add_instruction(Instruction::SignalAlloc(SignalAllocInst {
+          dst: sig_var,
+          frequency_id: freq_id,
+          source_agent_id: source_agent_id
         }))
 
-        # 2. Set freq_id field
-        add_instruction(Instruction::StoreField(StoreFieldInst {
-          object: sig_ptr,
-          offset: 0,
-          src: format("{}", freq_id)
+        # 3. Allocate payload struct
+        let payload_var = fresh_payload_var()
+        add_instruction(Instruction::Alloc(AllocInst {
+          dst: payload_var,
+          size: layout.total_size
         }))
 
-        # 3. Set each field
+        # 4. Set each field in payload struct
         for field_init in stmt.fields {
           let field_offset = get_field_offset(layout, field_init.name)
           let value_temp = lower_expression(field_init.value)
 
-          add_instruction(Instruction::StoreField(StoreFieldInst {
-            object: sig_ptr,
-            offset: field_offset,
-            src: value_temp
+          add_instruction(Instruction::SignalSetField(SignalSetFieldInst {
+            payload: payload_var,
+            field_offset: field_offset,
+            value: value_temp
           }))
         }
 
-        # 4. Emit signal
-        add_instruction(Instruction::Call(CallInst {
-          dst: "",
-          func: "runtime_emit_signal",
-          args: vec_from(["state_ptr", sig_ptr])
+        # 5. Attach payload to signal
+        add_instruction(Instruction::SignalSetPayload(SignalSetPayloadInst {
+          signal: sig_var,
+          payload: payload_var,
+          payload_size: layout.total_size
+        }))
+
+        # 6. Emit the signal
+        add_instruction(Instruction::SignalEmit(SignalEmitInst {
+          signal: sig_var,
+          frequency_id: freq_id
         }))
       }
 
@@ -1592,6 +1640,36 @@ network ir_generator {
         let label_name = format("bb{}", state.context.label_counter)
         state.context.label_counter = state.context.label_counter + 1
         return label_name
+      }
+
+      # M2 Phase 2: Signal operation helper functions
+
+      rule fresh_signal_var() -> string {
+        let sig_name = format("%signal{}", state.context.signal_counter)
+        state.context.signal_counter = state.context.signal_counter + 1
+        return sig_name
+      }
+
+      rule fresh_payload_var() -> string {
+        let payload_name = format("%payload{}", state.context.payload_counter)
+        state.context.payload_counter = state.context.payload_counter + 1
+        return payload_name
+      }
+
+      rule get_current_agent_id() -> u32 {
+        # Return the current agent ID from context
+        # In compiled code, this will be a compile-time constant
+        return state.context.current_agent_id
+      }
+
+      rule get_frequency_id(frequency_name: string) -> u32 {
+        # Look up frequency ID from frequency map
+        let freq_id = map_get(state.context.frequency_map, frequency_name)
+        if freq_id == null {
+          # Frequency not found - should have been caught by type checker
+          return 0
+        }
+        return freq_id
       }
 
       rule start_basic_block(label: string) {

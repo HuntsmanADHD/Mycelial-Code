@@ -27,6 +27,13 @@ build/
 *.min.js
 *.min.css
 
+# C/C++ build artifacts
+*.o
+*.a
+*.so
+*.dylib
+runtime/c/test_*
+
 # Logs
 logs/
 *.log
