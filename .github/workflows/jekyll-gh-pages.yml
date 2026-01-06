@@ -17,7 +17,7 @@ jobs:
         run: |
           mkdir -p site
           cp index.html site/
-          cp playground.html site/
+          # cp playground.html site/  # Removed - file no longer in use
           cp -r css site/
           cp -r js site/
           cp -r data site/
