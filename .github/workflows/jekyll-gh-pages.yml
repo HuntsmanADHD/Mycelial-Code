@@ -21,7 +21,7 @@ jobs:
           cp -r css site/
           cp -r js site/
           cp -r data site/
-          cp IMG_*.JPG IMG_*.png site/ 2>/dev/null || true
+          cp -r Pages/* site/
           cp .nojekyll site/
           echo "Files to deploy:"
           ls -la site/
