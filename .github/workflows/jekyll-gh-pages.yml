@@ -16,12 +16,12 @@ jobs:
       - name: Prepare site directory
         run: |
           mkdir -p site
-          cp index.html site/
-          # cp playground.html site/  # Removed - file no longer in use
-          cp -r css site/
-          cp -r js site/
-          cp -r data site/
+          # Copy everything from Pages folder (has index.html, images, etc)
           cp -r Pages/* site/
+          # Copy supporting folders if they exist
+          cp -r css site/ 2>/dev/null || true
+          cp -r js site/ 2>/dev/null || true
+          cp -r data site/ 2>/dev/null || true
           cp .nojekyll site/
           echo "Files to deploy:"
           ls -la site/
