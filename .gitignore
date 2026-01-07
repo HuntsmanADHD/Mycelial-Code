@@ -45,3 +45,6 @@ tmp/
 *.elf
 /PROJECT_OVERVIEW.md
 /QUICK_SUMMARY.md
+
+# Deploy artifacts (but keep Pages folder)
+site/
