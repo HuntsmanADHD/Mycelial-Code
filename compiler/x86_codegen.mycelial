@@ -212,6 +212,9 @@ network x86_codegen {
       }
 
       on signal(ir_complete, irc) {
+        # M3 Phase 1b: Generate _start entry point that extracts argc/argv
+        generate_start_function()
+
         # M2 Phase 5: Generate main() entry point
         generate_main_function()
 
@@ -1357,6 +1360,94 @@ network x86_codegen {
       # ─────────────────────────────────────────────────────────────────────────
       # M2 PHASE 5: MAIN FUNCTION GENERATION
       # ─────────────────────────────────────────────────────────────────────────
+
+      rule generate_start_function() {
+        # Generate _start entry point that extracts argc/argv from stack and calls main
+        # Based on M3_COMMAND_LINE_ARGS_SONNET_PROMPT.md
+        #
+        # Linux x86-64 stack layout at program start:
+        #   [rsp + 0]  = argc
+        #   [rsp + 8]  = argv[0]
+        #   [rsp + 16] = argv[1]
+        #   ...
+
+        # Declare global variables for argc and argv in .data section
+        emit asm_data {
+          label: "argc",
+          data_type: "quad",
+          value: "0"
+        }
+
+        emit asm_data {
+          label: "argv",
+          data_type: "quad",
+          value: "0"
+        }
+
+        # _start entry point label
+        emit asm_instruction {
+          label: "_start",
+          mnemonic: "",
+          operands: vec_new()
+        }
+
+        # Extract argc from stack (top of stack)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "popq",
+          operands: vec_from("%rdi")
+        }
+
+        # rsp now points to argv[0], save it in %rsi
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rsp", "%rsi")
+        }
+
+        # Store argc in global variable
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rdi", "argc(%rip)")
+        }
+
+        # Store argv in global variable
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rsi", "argv(%rip)")
+        }
+
+        # Call main function
+        emit asm_instruction {
+          label: "",
+          mnemonic: "call",
+          operands: vec_from("main")
+        }
+
+        # Exit with return code from main (in %rax)
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("%rax", "%rdi")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "movq",
+          operands: vec_from("$60", "%rax")
+        }
+
+        emit asm_instruction {
+          label: "",
+          mnemonic: "syscall",
+          operands: vec_new()
+        }
+
+        state.asm_count = state.asm_count + 9
+        state.function_count = state.function_count + 1
+      }
 
       rule generate_main_function() {
         # Generate main() entry point that initializes runtime and starts scheduler

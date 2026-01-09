@@ -16,6 +16,8 @@ This directory contains the C runtime library for compiled Mycelial programs. It
 | `dispatch.c` | ~280 | Signal dispatch to handler functions |
 | `agents.h` | ~250 | Enhanced agent registry and topology types |
 | `agents.c` | ~400 | Agent registry and network initialization |
+| `io.h` | ~200 | File I/O types and syscall wrappers |
+| `io.c` | ~320 | File read/write using Linux syscalls |
 
 ## Building
 
@@ -26,9 +28,10 @@ gcc -c -O2 -Wall -Wextra signal.c -o signal.o
 gcc -c -O2 -Wall -Wextra routing.c -o routing.o
 gcc -c -O2 -Wall -Wextra dispatch.c -o dispatch.o
 gcc -c -O2 -Wall -Wextra agents.c -o agents.o
+gcc -c -O2 -Wall -Wextra io.c -o io.o
 
 # Create static library
-ar rcs libmycelial_runtime.a memory.o signal.o routing.o dispatch.o agents.o
+ar rcs libmycelial_runtime.a memory.o signal.o routing.o dispatch.o agents.o io.o
 
 # Or compile all at once
 gcc -c -O2 -Wall -Wextra *.c
