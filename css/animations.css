@@ -1,0 +1,795 @@
+/* ============================================================================
+   MYCELIAL ANIMATIONS
+   Animation keyframes, transitions, and interactive effects
+   ============================================================================ */
+
+/* ============================================================================
+   GLOBAL ANIMATION SETTINGS
+   ============================================================================ */
+
+* {
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Respect user's motion preferences */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* ============================================================================
+   KEYFRAME ANIMATIONS
+   ============================================================================ */
+
+/* Fade In */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+/* Fade In Up */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Fade In Down */
+@keyframes fadeInDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Slide In Left */
+@keyframes slideInLeft {
+    from {
+        opacity: 0;
+        transform: translateX(-40px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* Slide In Right */
+@keyframes slideInRight {
+    from {
+        opacity: 0;
+        transform: translateX(40px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* Scale Up */
+@keyframes scaleUp {
+    from {
+        opacity: 0;
+        transform: scale(0.9);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Pulse */
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+    50% {
+        transform: scale(1.05);
+        opacity: 0.8;
+    }
+}
+
+/* Glow Pulse */
+@keyframes glowPulse {
+    0%, 100% {
+        box-shadow: 0 0 8px rgba(53, 94, 59, 0.3);
+    }
+    50% {
+        box-shadow: 0 0 20px rgba(53, 94, 59, 0.6);
+    }
+}
+
+/* Bounce */
+@keyframes bounce {
+    0%, 100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(-10px);
+    }
+}
+
+/* Rotate */
+@keyframes rotate {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Loading Dots */
+@keyframes loadingDots {
+    0%, 20% {
+        content: '.';
+    }
+    40% {
+        content: '..';
+    }
+    60%, 100% {
+        content: '...';
+    }
+}
+
+/* Shimmer */
+@keyframes shimmer {
+    0% {
+        background-position: -1000px 0;
+    }
+    100% {
+        background-position: 1000px 0;
+    }
+}
+
+/* Network Node Pulse */
+@keyframes nodePulse {
+    0%, 100% {
+        r: 4;
+        opacity: 1;
+    }
+    50% {
+        r: 6;
+        opacity: 0.6;
+    }
+}
+
+/* Signal Flow */
+@keyframes signalFlow {
+    0% {
+        stroke-dashoffset: 1000;
+        opacity: 0;
+    }
+    10% {
+        opacity: 1;
+    }
+    90% {
+        opacity: 1;
+    }
+    100% {
+        stroke-dashoffset: 0;
+        opacity: 0;
+    }
+}
+
+/* Cursor Blink */
+@keyframes cursorBlink {
+    0%, 50% {
+        opacity: 1;
+    }
+    51%, 100% {
+        opacity: 0;
+    }
+}
+
+/* Scroll Bounce */
+@keyframes scrollBounce {
+    0%, 100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(8px);
+    }
+}
+
+/* ============================================================================
+   HERO ANIMATIONS
+   ============================================================================ */
+
+.hero {
+    animation: fadeIn 1s ease-out;
+}
+
+.hero-title {
+    animation: fadeInUp 1s ease-out 0.2s both;
+}
+
+.hero-subtitle {
+    animation: fadeInUp 1s ease-out 0.4s both;
+}
+
+.hero-cta {
+    animation: fadeInUp 1s ease-out 0.6s both;
+}
+
+.scroll-indicator {
+    animation: fadeIn 1s ease-out 0.8s both;
+}
+
+.scroll-arrow {
+    animation: scrollBounce 2s ease-in-out infinite;
+}
+
+/* ============================================================================
+   SECTION ANIMATIONS (SCROLL-TRIGGERED)
+   ============================================================================ */
+
+.section {
+    opacity: 0;
+    animation: fadeInUp 0.8s ease-out forwards;
+}
+
+.section:nth-child(odd) {
+    animation-delay: 0.1s;
+}
+
+.section:nth-child(even) {
+    animation-delay: 0.2s;
+}
+
+/* ============================================================================
+   CARD ANIMATIONS
+   ============================================================================ */
+
+.comparison-card,
+.benefit-card,
+.feature-card,
+.doc-card,
+.example-card {
+    transition: all 0.3s ease;
+}
+
+.comparison-card:hover,
+.benefit-card:hover,
+.feature-card:hover,
+.doc-card:hover,
+.example-card:hover {
+    transform: translateY(-4px);
+}
+
+/* Stagger card animations */
+.comparison-card:nth-child(1),
+.benefit-card:nth-child(1),
+.feature-card:nth-child(1),
+.example-card:nth-child(1) {
+    animation: fadeInUp 0.6s ease-out 0.1s both;
+}
+
+.comparison-card:nth-child(2),
+.benefit-card:nth-child(2),
+.feature-card:nth-child(2),
+.example-card:nth-child(2) {
+    animation: fadeInUp 0.6s ease-out 0.2s both;
+}
+
+.comparison-card:nth-child(3),
+.benefit-card:nth-child(3),
+.feature-card:nth-child(3),
+.example-card:nth-child(3) {
+    animation: fadeInUp 0.6s ease-out 0.3s both;
+}
+
+.comparison-card:nth-child(4),
+.benefit-card:nth-child(4),
+.feature-card:nth-child(4),
+.example-card:nth-child(4) {
+    animation: fadeInUp 0.6s ease-out 0.4s both;
+}
+
+.comparison-card:nth-child(5),
+.feature-card:nth-child(5),
+.example-card:nth-child(5) {
+    animation: fadeInUp 0.6s ease-out 0.5s both;
+}
+
+.comparison-card:nth-child(6),
+.feature-card:nth-child(6),
+.example-card:nth-child(6) {
+    animation: fadeInUp 0.6s ease-out 0.6s both;
+}
+
+/* ============================================================================
+   BUTTON ANIMATIONS
+   ============================================================================ */
+
+.btn {
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.btn::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.btn:hover::before {
+    width: 300px;
+    height: 300px;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn-primary:hover {
+    animation: glowPulse 2s ease-in-out infinite;
+}
+
+/* ============================================================================
+   CODE EXAMPLE ANIMATIONS
+   ============================================================================ */
+
+.code-example {
+    transition: all 0.3s ease;
+}
+
+.code-example:hover {
+    box-shadow: 0 8px 24px rgba(53, 94, 59, 0.4);
+}
+
+.btn-copy {
+    transition: all 0.2s ease;
+}
+
+.btn-copy:active {
+    transform: scale(0.95);
+}
+
+/* ============================================================================
+   NAVIGATION ANIMATIONS
+   ============================================================================ */
+
+.nav-bar {
+    animation: fadeInDown 0.6s ease-out;
+}
+
+.nav-link {
+    position: relative;
+    transition: color 0.3s ease;
+}
+
+.nav-link::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 0;
+    width: 0;
+    height: 2px;
+    background: var(--color-primary);
+    transition: width 0.3s ease;
+}
+
+.nav-link:hover::after {
+    width: 100%;
+}
+
+/* ============================================================================
+   PLAYGROUND ANIMATIONS
+   ============================================================================ */
+
+.playground-frame {
+    animation: fadeIn 1s ease-out;
+}
+
+.editor-tab {
+    transition: all 0.2s ease;
+}
+
+.editor-tab:hover {
+    transform: translateY(-2px);
+}
+
+.output-tab {
+    position: relative;
+    transition: all 0.2s ease;
+}
+
+.output-tab::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    width: 0;
+    height: 2px;
+    background: var(--color-primary);
+    transform: translateX(-50%);
+    transition: width 0.3s ease;
+}
+
+.output-tab:hover::after {
+    width: 80%;
+}
+
+.output-tab.active::after {
+    width: 100%;
+}
+
+/* ============================================================================
+   MODAL ANIMATIONS
+   ============================================================================ */
+
+.modal {
+    transition: all 0.3s ease;
+}
+
+.modal.active {
+    animation: fadeIn 0.3s ease-out;
+}
+
+.modal-content {
+    animation: scaleUp 0.3s ease-out;
+}
+
+.modal-close {
+    transition: all 0.2s ease;
+}
+
+.modal-close:hover {
+    transform: rotate(90deg);
+}
+
+/* ============================================================================
+   DEMO ANIMATIONS
+   ============================================================================ */
+
+.demo-visual svg {
+    animation: fadeIn 0.8s ease-out;
+}
+
+.demo-visual circle {
+    animation: nodePulse 2s ease-in-out infinite;
+}
+
+.demo-visual line.active {
+    animation: signalFlow 2s ease-in-out;
+}
+
+.demo-visual path.signal {
+    stroke-dasharray: 1000;
+    stroke-dashoffset: 1000;
+    animation: signalFlow 2s ease-in-out infinite;
+}
+
+/* ============================================================================
+   NETWORK CANVAS ANIMATIONS (HERO BACKGROUND)
+   ============================================================================ */
+
+#network-canvas {
+    animation: fadeIn 2s ease-out;
+}
+
+/* Animated gradient background */
+.hero-background::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(
+        circle,
+        rgba(53, 94, 59, 0.1) 0%,
+        transparent 50%
+    );
+    animation: rotate 30s linear infinite;
+}
+
+/* ============================================================================
+   LOADING ANIMATIONS
+   ============================================================================ */
+
+.loading {
+    position: relative;
+}
+
+.loading::after {
+    animation: loadingDots 1.5s steps(3, end) infinite;
+}
+
+/* Spinner */
+.spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(53, 94, 59, 0.3);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: rotate 1s linear infinite;
+}
+
+/* ============================================================================
+   COMPILATION PROGRESS ANIMATIONS
+   ============================================================================ */
+
+.compile-progress {
+    position: relative;
+    overflow: hidden;
+}
+
+.compile-progress::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(53, 94, 59, 0.3),
+        transparent
+    );
+    animation: shimmer 2s infinite;
+}
+
+/* ============================================================================
+   STATUS INDICATOR ANIMATIONS
+   ============================================================================ */
+
+.status-indicator {
+    transition: all 0.3s ease;
+}
+
+.status-indicator.compiling {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-indicator.success {
+    animation: scaleUp 0.3s ease-out;
+}
+
+.status-indicator.error {
+    animation: pulse 0.5s ease-in-out 3;
+}
+
+/* ============================================================================
+   CONSOLE LINE ANIMATIONS
+   ============================================================================ */
+
+.console-line {
+    animation: fadeInLeft 0.3s ease-out;
+}
+
+.console-line.new {
+    animation: slideInLeft 0.3s ease-out;
+}
+
+/* ============================================================================
+   TABLE ROW ANIMATIONS
+   ============================================================================ */
+
+#tokens-table tbody tr {
+    transition: all 0.2s ease;
+}
+
+#tokens-table tbody tr:hover {
+    transform: translateX(4px);
+}
+
+/* ============================================================================
+   ICON ANIMATIONS
+   ============================================================================ */
+
+.benefit-icon,
+.doc-icon,
+.logo-icon {
+    transition: all 0.3s ease;
+}
+
+.benefit-card:hover .benefit-icon,
+.doc-card:hover .doc-icon {
+    transform: scale(1.1) rotate(5deg);
+}
+
+.logo-icon {
+    animation: pulse 3s ease-in-out infinite;
+}
+
+/* ============================================================================
+   COMPARISON LIST ANIMATIONS
+   ============================================================================ */
+
+.comparison-list li {
+    animation: fadeInLeft 0.5s ease-out both;
+}
+
+.comparison-list.negative li:nth-child(1) {
+    animation-delay: 0.1s;
+}
+
+.comparison-list.negative li:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.comparison-list.negative li:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+.comparison-list.negative li:nth-child(4) {
+    animation-delay: 0.4s;
+}
+
+.comparison-list.positive li:nth-child(1) {
+    animation-delay: 0.1s;
+}
+
+.comparison-list.positive li:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.comparison-list.positive li:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+.comparison-list.positive li:nth-child(4) {
+    animation-delay: 0.4s;
+}
+
+/* ============================================================================
+   TOOLTIP ANIMATIONS
+   ============================================================================ */
+
+[data-tooltip] {
+    position: relative;
+}
+
+[data-tooltip]::before {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    padding: 0.5rem 0.75rem;
+    background: var(--color-off-black);
+    color: var(--color-white);
+    border: 1px solid var(--color-primary);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s ease;
+}
+
+[data-tooltip]:hover::before {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-4px);
+}
+
+/* ============================================================================
+   FOCUS ANIMATIONS
+   ============================================================================ */
+
+button:focus,
+a:focus,
+input:focus,
+select:focus {
+    animation: glowPulse 1.5s ease-in-out;
+}
+
+/* ============================================================================
+   PAGE TRANSITION ANIMATIONS
+   ============================================================================ */
+
+.page-enter {
+    animation: fadeIn 0.5s ease-out;
+}
+
+.page-exit {
+    animation: fadeOut 0.5s ease-out;
+}
+
+@keyframes fadeOut {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
+}
+
+/* ============================================================================
+   SCROLL-TRIGGERED ANIMATIONS (INTERSECTION OBSERVER)
+   ============================================================================ */
+
+.animate-on-scroll {
+    opacity: 0;
+    transform: translateY(40px);
+    transition: all 0.8s ease-out;
+}
+
+.animate-on-scroll.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* ============================================================================
+   MICRO-INTERACTIONS
+   ============================================================================ */
+
+/* Button ripple effect */
+.btn-ripple {
+    position: relative;
+    overflow: hidden;
+}
+
+.btn-ripple::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.5);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.btn-ripple:active::after {
+    width: 200px;
+    height: 200px;
+}
+
+/* ============================================================================
+   PERFORMANCE OPTIMIZATIONS
+   ============================================================================ */
+
+/* Use GPU acceleration for animations */
+.hero,
+.btn,
+.card,
+.nav-link,
+.output-tab {
+    will-change: transform;
+}
+
+/* Optimize repaints */
+.CodeMirror,
+.output-content,
+.console-content {
+    contain: layout style paint;
+}
