@@ -48,3 +48,7 @@ tmp/
 
 # Deploy artifacts (but keep Pages folder)
 site/
+*.elf
+tests/*.elf
+*.o
+/tmp/
