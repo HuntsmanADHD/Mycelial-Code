@@ -371,6 +371,12 @@ class MycelialExecutor {
         return expr.elements.map(el => this.evaluateExpression(agent, el, context));
       }
 
+      case 'map-literal': {
+        // For now, only support empty map literals
+        // Return a JavaScript Map object
+        return new Map();
+      }
+
       case 'struct-literal': {
         // Evaluate all field values and return as plain object
         const obj = {};

@@ -40,7 +40,8 @@ class MycelialParser {
       hyphae: {},
       spawns: [],
       sockets: [],
-      fruitingBodies: []
+      fruitingBodies: [],
+      config: {}
     };
 
     // Parse network sections
@@ -55,6 +56,8 @@ class MycelialParser {
         this.parseHyphae(network);
       } else if (this.checkKeyword('topology')) {
         this.parseTopology(network);
+      } else if (this.checkKeyword('config')) {
+        this.skipConfigBlock();
       } else {
         break;
       }
@@ -69,6 +72,30 @@ class MycelialParser {
    */
   skipTypesBlock() {
     this.expectKeyword('types');
+    this.expectChar('{');
+
+    // Skip until matching closing brace
+    let depth = 1;
+    while (depth > 0 && this.position < this.source.length) {
+      this.skipWhitespaceAndComments();
+
+      if (this.checkChar('{')) {
+        this.consumeChar('{');
+        depth++;
+      } else if (this.checkChar('}')) {
+        this.consumeChar('}');
+        depth--;
+      } else {
+        this.consume();
+      }
+    }
+  }
+
+  /**
+   * Skip config block (we don't need to parse runtime config for compilation)
+   */
+  skipConfigBlock() {
+    this.expectKeyword('config');
     this.expectChar('{');
 
     // Skip until matching closing brace
@@ -224,16 +251,27 @@ class MycelialParser {
     let frequency = null;
     let binding = null;
     let guard = null;
+    let cycleNumber = null;
 
     if (this.checkKeyword('rest')) {
       this.expectKeyword('rest');
       handlerType = 'rest';
+    } else if (this.checkKeyword('cycle')) {
+      // Timed handler: on cycle N { }
+      this.expectKeyword('cycle');
+      cycleNumber = this.parseNumber();
+      handlerType = 'cycle';
     } else {
       this.expectKeyword('signal');
       this.expectChar('(');
       frequency = this.parseIdentifier();
-      this.expectChar(',');
-      binding = this.parseIdentifier();
+
+      // Check if there's a binding parameter
+      if (this.checkChar(',')) {
+        this.consumeChar(',');
+        binding = this.parseIdentifier();
+      }
+
       this.expectChar(')');
 
       // Optional guard: when condition
@@ -251,6 +289,7 @@ class MycelialParser {
       type: handlerType,
       frequency,
       binding,
+      cycleNumber,
       guard,
       body
     };
@@ -330,7 +369,15 @@ class MycelialParser {
         this.expectKeyword('socket');
         const from = this.parseIdentifier();
         this.expectKeyword('->');
-        const to = this.parseIdentifier();
+
+        // Support broadcast wildcard: socket X -> *
+        let to;
+        if (this.checkChar('*')) {
+          this.consumeChar('*');
+          to = '*';  // Broadcast to all agents
+        } else {
+          to = this.parseIdentifier();
+        }
 
         // Parse (frequency: name) or just frequency name
         let frequency = null;
@@ -544,18 +591,40 @@ class MycelialParser {
   }
 
   /**
-   * Parse assignment target (variable or state.field)
+   * Parse assignment target (variable, state.field, or map[key])
    */
   parseAssignmentTarget() {
-    const name = this.parseIdentifier();
+    let target = { type: 'variable', name: this.parseIdentifier() };
 
-    if (this.checkChar('.')) {
-      this.consumeChar('.');
-      const field = this.parseIdentifier();
-      return { type: 'state-access', object: name, field };
+    // Handle field access and array access
+    while (true) {
+      this.skipWhitespaceAndComments();
+
+      // Field access: target.field
+      if (this.checkChar('.') && this.source[this.position + 1] !== '.') {
+        this.consumeChar('.');
+        const field = this.parseIdentifier();
+
+        // Convert to state-access if this is the first field and object is a simple identifier
+        if (target.type === 'variable') {
+          target = { type: 'state-access', object: target.name, field };
+        } else {
+          target = { type: 'field-access', object: target, field };
+        }
+      }
+      // Array access: target[index]
+      else if (this.checkChar('[')) {
+        this.consumeChar('[');
+        const index = this.parseExpression();
+        this.expectChar(']');
+        target = { type: 'array-access', object: target, index };
+      }
+      else {
+        break;
+      }
     }
 
-    return { type: 'variable', name };
+    return target;
   }
 
   /**
@@ -590,12 +659,24 @@ class MycelialParser {
   }
 
   parseEquality() {
-    let left = this.parseComparison();
+    let left = this.parseRange();
 
     while (this.checkOperator('==') || this.checkOperator('!=')) {
       const op = this.consumeOperator(['==', '!=']);
-      const right = this.parseComparison();
+      const right = this.parseRange();
       left = { type: 'binary', op, left, right };
+    }
+
+    return left;
+  }
+
+  parseRange() {
+    let left = this.parseComparison();
+
+    if (this.checkOperator('..')) {
+      this.consumeOperator('..');
+      const right = this.parseComparison();
+      return { type: 'range', start: left, end: right };
     }
 
     return left;
@@ -659,7 +740,8 @@ class MycelialParser {
       this.skipWhitespaceAndComments();
 
       // Field access: expr.field
-      if (this.checkChar('.')) {
+      // But NOT range operator: expr..end
+      if (this.checkChar('.') && this.source[this.position + 1] !== '.') {
         this.consumeChar('.');
         const field = this.parseIdentifier();
         expr = { type: 'field-access', object: expr, field };
@@ -766,6 +848,21 @@ class MycelialParser {
 
       this.expectChar(']');
       return { type: 'array-literal', elements };
+    }
+
+    // Map literal: {} (for now, only empty maps)
+    if (this.checkChar('{')) {
+      this.consumeChar('{');
+      this.skipWhitespaceAndComments();
+
+      // For now, only support empty map literals
+      if (this.checkChar('}')) {
+        this.consumeChar('}');
+        return { type: 'map-literal', entries: [] };
+      }
+
+      // TODO: Support map literals with entries: {key: value, ...}
+      throw new Error(`Map literals with entries not yet supported at line ${this.line}`);
     }
 
     // Parenthesized expression
@@ -909,7 +1006,12 @@ class MycelialParser {
     this.skipWhitespaceAndComments();
 
     let num = '';
-    while (this.isDigit(this.peek()) || this.peek() === '.') {
+    let hasDot = false;
+
+    while (this.isDigit(this.peek()) || (this.peek() === '.' && !hasDot && this.isDigit(this.source[this.position + 1]))) {
+      if (this.peek() === '.') {
+        hasDot = true;
+      }
       num += this.consume();
     }
 

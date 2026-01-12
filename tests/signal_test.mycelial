@@ -90,7 +90,7 @@ network signal_test {
     spawn receiver as R1
     spawn monitor as M1
 
-    socket from S1 to R1 (frequency: ping)
-    socket from R1 to M1 (frequency: pong)
+    socket S1 -> R1 (frequency: ping)
+    socket R1 -> M1 (frequency: pong)
   }
 }

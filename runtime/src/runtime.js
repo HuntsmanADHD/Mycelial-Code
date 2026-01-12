@@ -24,6 +24,9 @@ const { MycelialScheduler } = require('./interpreter/scheduler.js');
 const { BinaryGenerator } = require('./binary-generator.js');
 const { ELFLinker } = require('./elf-linker.js');
 
+// Native code generator (new compiler pipeline)
+const { MycelialCodeGenerator } = require('./compiler/mycelial-codegen.js');
+
 /**
  * Runtime - Main compilation orchestrator
  */
@@ -42,6 +45,7 @@ class Runtime {
     this.outputPath = options.outputPath;
     this.verbose = options.verbose || false;
     this.maxCycles = options.maxCycles || 1000;
+    this.useNativeCodegen = options.useNativeCodegen !== false; // Default to true
 
     // Runtime components
     this.fileIO = new FileIO();
@@ -113,14 +117,19 @@ class Runtime {
     try {
       this.logProgress('COMPILE', 'Starting compilation pipeline');
 
-      // Run compilation pipeline
-      await this.runCompilationPipeline();
+      if (this.useNativeCodegen) {
+        // New: Use native code generator
+        await this.runNativeCodegenPipeline();
+      } else {
+        // Old: Run interpreter-based compilation pipeline
+        await this.runCompilationPipeline();
 
-      // Extract results from agent outputs
-      await this.extractCompilationResults();
+        // Extract results from agent outputs
+        await this.extractCompilationResults();
 
-      // Finalize and write binary
-      await this.finalizeOutput();
+        // Finalize and write binary
+        await this.finalizeOutput();
+      }
 
       // Mark success
       this.compilationResult.success = true;
@@ -230,7 +239,8 @@ class Runtime {
         if (!validAgentIds.has(fromAgent)) {
           throw new Error(`Socket references unknown agent: ${fromAgent}`);
         }
-        if (!validAgentIds.has(toAgent)) {
+        // Allow '*' as broadcast destination
+        if (toAgent !== '*' && !validAgentIds.has(toAgent)) {
           throw new Error(`Socket references unknown agent: ${toAgent}`);
         }
       }
@@ -303,6 +313,59 @@ class Runtime {
     } catch (error) {
       this.logError(error, 'pipeline', {});
       throw new Error(`Pipeline execution failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Run native code generation pipeline
+   * @private
+   */
+  async runNativeCodegenPipeline() {
+    this.logProgress('CODEGEN', 'Starting native code generation');
+
+    try {
+      // Generate x86-64 assembly from network AST
+      const codegen = new MycelialCodeGenerator(this.networkDefinition);
+      const assemblyCode = codegen.generate();
+
+      this.logProgress('CODEGEN', `Generated ${assemblyCode.length} bytes of assembly`);
+
+      // Assemble to machine code using GNU as
+      const { execSync } = require('child_process');
+      const fs = require('fs');
+      const path = require('path');
+
+      // Write assembly to temporary file
+      const tmpDir = '/tmp';
+      const asmPath = path.join(tmpDir, 'mycelial_temp.s');
+      const objPath = path.join(tmpDir, 'mycelial_temp.o');
+
+      fs.writeFileSync(asmPath, assemblyCode);
+      this.logProgress('CODEGEN', `Assembly written to ${asmPath}`);
+
+      // Assemble with GNU as
+      execSync(`as ${asmPath} -o ${objPath}`, { stdio: 'pipe' });
+      this.logProgress('CODEGEN', 'Assembly successful');
+
+      // Link with ld
+      execSync(`ld ${objPath} -o ${this.outputPath}`, { stdio: 'pipe' });
+      this.logProgress('CODEGEN', `Linked to ${this.outputPath}`);
+
+      // Clean up temp files
+      fs.unlinkSync(asmPath);
+      fs.unlinkSync(objPath);
+
+      // Update compilation result
+      this.compilationResult.outputPath = this.outputPath;
+      this.compilationResult.success = true;
+      this.compilationResult.stats = {
+        assemblySize: assemblyCode.length,
+        binarySize: fs.statSync(this.outputPath).size
+      };
+
+    } catch (error) {
+      this.logError(error, 'codegen', {});
+      throw new Error(`Native code generation failed: ${error.message}`);
     }
   }
 

@@ -1,0 +1,55 @@
+network TimedHandlerTest {
+  # Simple test of timed handler functionality
+
+  frequencies {
+    start {
+      value: u32
+    }
+
+    output {
+      message: string
+    }
+  }
+
+  hyphae {
+    hyphal counter {
+      state {
+        count: u32 = 0
+      }
+
+      # Regular signal handler
+      on signal(start, s) {
+        state.count = s.value
+        emit output { message: format("Started with count: {}", state.count) }
+      }
+
+      # Timed handler - executes on cycle 3
+      on cycle 3 {
+        state.count = state.count + 10
+        emit output { message: format("Cycle 3: count is now {}", state.count) }
+      }
+
+      # Timed handler - executes on cycle 5
+      on cycle 5 {
+        state.count = state.count + 20
+        emit output { message: format("Cycle 5: count is now {}", state.count) }
+      }
+
+      # Timed handler - executes on cycle 10
+      on cycle 10 {
+        emit output { message: format("Cycle 10: final count = {}", state.count) }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn counter as C1
+
+    # Connect to output
+    socket input -> C1 (frequency: start)
+    socket C1 -> output
+  }
+}
