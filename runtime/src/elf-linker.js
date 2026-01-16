@@ -406,6 +406,7 @@ class ELFLinker {
       const sym = this.symbols.get(reloc.symbol);
       if (!sym) {
         console.warn(`Undefined symbol: ${reloc.symbol}`);
+        console.warn(`  Available symbols: ${Array.from(this.symbols.keys()).filter(k => k.startsWith('str_')).join(', ')}`);
         continue;
       }
 

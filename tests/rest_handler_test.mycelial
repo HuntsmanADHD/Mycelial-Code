@@ -1,0 +1,35 @@
+network RestHandlerTest {
+  frequencies {
+    start {}
+
+    output {
+      message: string
+    }
+  }
+
+  hyphae {
+    hyphal counter {
+      state {
+        count: u32 = 0
+      }
+
+      on rest {
+        state.count = 999
+      }
+
+      on signal(start, s) {
+        emit output { message: format("Count from rest: {}", state.count) }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn counter as C1
+
+    socket input -> C1 (frequency: start)
+    socket C1 -> output
+  }
+}

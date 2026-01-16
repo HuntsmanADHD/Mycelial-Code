@@ -135,6 +135,7 @@ class BinaryGenerator {
     this.linker.addSection('.text', asmResult.code);
     this.linker.addSection('.rodata', asmResult.rodata);
     this.linker.addSection('.data', asmResult.data);
+    this.linker.addSection('.bss', asmResult.bss);
     this.linker.addSymbols(asmResult.symbols);
     this.linker.addRelocations(asmResult.relocations);
 

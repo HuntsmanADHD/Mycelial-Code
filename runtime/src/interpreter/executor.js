@@ -274,12 +274,121 @@ class MycelialExecutor {
         break;
       }
 
+      case 'for-kv': {
+        // for key, value in map { ... }
+        const collection = this.evaluateExpression(agent, stmt.collection, context);
+        if (collection instanceof Map) {
+          for (const [key, value] of collection.entries()) {
+            const loopContext = { ...context, [stmt.key]: key, [stmt.value]: value };
+            const result = this.executeStatements(agent, stmt.body, loopContext);
+            if (result !== undefined) {
+              return { type: 'return', value: result };
+            }
+          }
+        } else if (typeof collection === 'object' && collection !== null) {
+          // Also support plain objects
+          for (const [key, value] of Object.entries(collection)) {
+            const loopContext = { ...context, [stmt.key]: key, [stmt.value]: value };
+            const result = this.executeStatements(agent, stmt.body, loopContext);
+            if (result !== undefined) {
+              return { type: 'return', value: result };
+            }
+          }
+        }
+        break;
+      }
+
       case 'while': {
         // while condition { ... }
         while (this.evaluateExpression(agent, stmt.condition, context)) {
           const result = this.executeStatements(agent, stmt.body, context);
           if (result !== undefined) {
             return { type: 'return', value: result };
+          }
+        }
+        break;
+      }
+
+      case 'match': {
+        // match value { pattern => { body }, ... }
+        const value = this.evaluateExpression(agent, stmt.value, context);
+
+        for (const arm of stmt.arms) {
+          // Check if any pattern matches
+          let matched = false;
+          let patternContext = { ...context };
+
+          for (const pattern of arm.patterns) {
+            // Handle tuple pattern: (pattern1, pattern2, ...)
+            if (pattern.type === 'tuple-pattern') {
+              // Check if value is an array with matching length
+              if (Array.isArray(value) && value.length === pattern.patterns.length) {
+                matched = true;
+
+                // Try to match each sub-pattern
+                for (let i = 0; i < pattern.patterns.length; i++) {
+                  const subPattern = pattern.patterns[i];
+                  const subValue = value[i];
+
+                  // Handle enum pattern in tuple
+                  if (subPattern.type === 'enum-pattern') {
+                    if (!subValue || typeof subValue !== 'object' ||
+                        subValue.variant !== subPattern.variant ||
+                        subValue.enumType !== subPattern.enumType) {
+                      matched = false;
+                      break;
+                    }
+
+                    // Bind variables from enum pattern
+                    if (subPattern.bindings && subPattern.bindings.length > 0) {
+                      patternContext[subPattern.bindings[0]] = subValue.payload || subValue.data || subValue;
+                    }
+                  } else {
+                    // Simple sub-pattern - just compare
+                    const subPatternValue = this.evaluateExpression(agent, subPattern, patternContext);
+                    if (subValue !== subPatternValue) {
+                      matched = false;
+                      break;
+                    }
+                  }
+                }
+
+                if (matched) break;
+              }
+            }
+            // Handle enum pattern with bindings: EnumVariant(binding1, binding2)
+            else if (pattern.type === 'enum-pattern') {
+              // Check if value matches the enum variant
+              if (value && typeof value === 'object' &&
+                  value.variant === pattern.variant &&
+                  value.enumType === pattern.enumType) {
+                matched = true;
+
+                // Bind the payload to variables
+                if (pattern.bindings && pattern.bindings.length > 0) {
+                  // For now, assume single binding gets the whole payload
+                  patternContext[pattern.bindings[0]] = value.payload || value.data || value;
+                }
+
+                break;
+              }
+            } else {
+              // Simple pattern - evaluate and compare
+              const patternValue = this.evaluateExpression(agent, pattern, patternContext);
+
+              if (value === patternValue || String(value) === String(patternValue)) {
+                matched = true;
+                break;
+              }
+            }
+          }
+
+          if (matched) {
+            const result = this.executeStatements(agent, arm.body, patternContext);
+            if (result !== undefined) {
+              return { type: 'return', value: result };
+            }
+            break; // Only execute first matching arm
           }
         }
         break;
@@ -386,6 +495,59 @@ class MycelialExecutor {
         return obj;
       }
 
+      case 'function-literal': {
+        // Return a closure that captures the current context
+        const capturedAgent = agent;
+        const capturedContext = { ...context };
+        const functionExpr = expr;
+
+        return (...args) => {
+          // Create new context with parameters bound to arguments
+          const fnContext = { ...capturedContext };
+          for (let i = 0; i < functionExpr.params.length; i++) {
+            fnContext[functionExpr.params[i].name] = args[i];
+          }
+
+          // Execute function body
+          const result = this.executeStatements(capturedAgent, functionExpr.body, fnContext);
+
+          // If body contains return statement, extract the value
+          if (result && result.type === 'return') {
+            return result.value;
+          }
+
+          return result;
+        };
+      }
+
+      case 'tuple-expression': {
+        // Evaluate all tuple elements and return as array
+        return expr.elements.map(elem => this.evaluateExpression(agent, elem, context));
+      }
+
+      case 'type-cast': {
+        // Evaluate the expression and perform type conversion
+        const value = this.evaluateExpression(agent, expr.expression, context);
+        const targetType = expr.targetType;
+
+        // For primitive types, perform conversions
+        if (targetType === 'u8' || targetType === 'i8' ||
+            targetType === 'u16' || targetType === 'i16' ||
+            targetType === 'u32' || targetType === 'i32' ||
+            targetType === 'u64' || targetType === 'i64') {
+          return Number(value) | 0; // Convert to integer
+        } else if (targetType === 'f32' || targetType === 'f64') {
+          return Number(value); // Convert to float
+        } else if (targetType === 'bool' || targetType === 'boolean') {
+          return Boolean(value);
+        } else if (targetType === 'string') {
+          return String(value);
+        }
+
+        // For other types, just return the value as-is (JavaScript is dynamically typed)
+        return value;
+      }
+
       default:
         throw new Error(`Unknown expression type: ${expr.type}`);
     }
@@ -409,6 +571,11 @@ class MycelialExecutor {
       case '>=': return left >= right;
       case '&&': return left && right;
       case '||': return left || right;
+      case '|': return left | right;
+      case '&': return left & right;
+      case '^': return left ^ right;
+      case '<<': return left << right;
+      case '>>': return left >> right;
       default:
         throw new Error(`Unknown binary operator: ${op}`);
     }

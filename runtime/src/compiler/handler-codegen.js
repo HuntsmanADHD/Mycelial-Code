@@ -1,331 +1,403 @@
 /**
- * Handler Code Generator
+ * Mycelial Handler Code Generator
  *
- * Generates complete handler functions from Mycelial handler definitions.
- * Produces properly structured x86-64 functions with:
- * - Function prologue (stack frame setup)
- * - Agent state initialization
- * - Signal payload extraction
- * - Handler body compilation
- * - Function epilogue (cleanup and return)
+ * Generates complete handler functions with prologues, epilogues, and body.
+ * Each handler is a callable x86-64 function that executes agent logic.
  *
- * Calling Convention (System V AMD64 ABI):
- * - First argument (rdi): Pointer to signal payload
- * - Return value (rax): Handler status (0 = success)
- * - Callee-saved registers: rbx, r12-r15, rbp
- *
- * Register Usage:
- * - r12: Agent state base pointer (callee-saved)
- * - r13: Signal payload pointer (callee-saved)
- * - r14-r15: Reserved for statement compiler
- * - rbp: Frame pointer
- * - rsp: Stack pointer
+ * Handler calling convention:
+ * - rdi: agent state pointer
+ * - rsi: signal payload pointer (for signal handlers)
+ * - Returns: void
  *
  * @author Claude Sonnet 4.5
- * @date 2026-01-10
+ * @date 2026-01-15
  */
 
-class HandlerCodeGenerator {
-  constructor(symbolTable, expressionCompiler, statementCompiler) {
+const { StatementCompiler } = require('./statement-compiler.js');
+
+class HandlerCodegen {
+  constructor(symbolTable, agentId, sharedLabelCounter = null) {
     this.symbolTable = symbolTable;
-    this.exprCompiler = expressionCompiler;
-    this.stmtCompiler = statementCompiler;
+    this.agentId = agentId;
+    // Use shared label counter if provided, otherwise create local one
+    this.labelCounter = sharedLabelCounter || { count: 0 };
+    this.stmtCompiler = new StatementCompiler(symbolTable, agentId, this.labelCounter);
   }
 
   /**
-   * Generate a complete handler function
-   * @param {string} agentId - Agent instance ID
-   * @param {Object} handlerDef - Handler definition from AST
-   * @returns {Object} { label, code, context }
+   * Generate a unique label
    */
-  generateHandler(agentId, handlerDef) {
-    const agent = this.symbolTable.agents.get(agentId);
-    if (!agent) {
-      throw new Error(`Agent not found: ${agentId}`);
-    }
+  genLabel(prefix) {
+    return `${prefix}_${this.labelCounter.count++}`;
+  }
 
-    // Generate handler label based on type
-    let handlerLabel;
-    if (handlerDef.type === 'cycle') {
-      // Extract cycle number from literal expression if needed
-      let cycleNum = handlerDef.cycleNumber;
-      if (typeof cycleNum === 'object' && cycleNum.type === 'literal') {
-        cycleNum = cycleNum.value;
-      }
-      handlerLabel = `handler_${agentId}_cycle${cycleNum}`;
-    } else {
-      handlerLabel = `handler_${agentId}_${handlerDef.frequency}`;
-    }
-
-    // Create compilation context
-    const context = {
-      agentId: agentId,
-      agent: agent,
-      handlerType: handlerDef.type,
-      cycleNumber: handlerDef.cycleNumber || null,
-      signalFrequency: handlerDef.frequency,
-      signalBinding: handlerDef.binding || null,
-      locals: {},
-      localStackOffset: 0
-    };
-
+  /**
+   * Generate REST handler (initialization)
+   * Called once when the agent is spawned
+   */
+  generateRestHandler() {
     const lines = [];
+    const agent = this.symbolTable.agents.get(this.agentId);
 
-    // Add handler header comment
-    lines.push(`# ================================================================`);
-    lines.push(`# Handler: ${handlerLabel}`);
-    lines.push(`# Agent: ${agentId} (type: ${agent.type})`);
-    if (handlerDef.type === 'cycle') {
-      // Extract cycle number from literal expression if needed
-      let cycleNum = handlerDef.cycleNumber;
-      if (typeof cycleNum === 'object' && cycleNum.type === 'literal') {
-        cycleNum = cycleNum.value;
-      }
-      lines.push(`# Type: Timed handler (cycle ${cycleNum})`);
-    } else {
-      lines.push(`# Signal: ${handlerDef.frequency}`);
-      if (handlerDef.binding) {
-        lines.push(`# Binding: ${handlerDef.binding}`);
-      }
+    if (!agent) {
+      throw new Error(`Unknown agent: ${this.agentId}`);
     }
+
+    const restBody = agent.handlers.rest;
+    if (!restBody) {
+      // No REST handler defined, generate empty one
+      return this.generateEmptyRestHandler();
+    }
+
+    const handlerName = `handler_${this.agentId}_rest`;
+
     lines.push(`# ================================================================`);
+    lines.push(`# REST Handler: ${this.agentId}`);
+    lines.push(`# Initializes agent state`);
+    lines.push(`# Arguments: rdi = agent state pointer`);
+    lines.push(`# ================================================================`);
+    lines.push(`${handlerName}:`);
+
+    // Prologue
+    lines.push(`    push rbp`);
+    lines.push(`    mov rbp, rsp`);
+    lines.push(`    push r12              # Save r12`);
+    lines.push(`    push r13              # Save r13`);
+    lines.push(`    push r14              # Save r14`);
+    lines.push(`    push r15              # Save r15`);
     lines.push(``);
 
-    // Function label
-    lines.push(`${handlerLabel}:`);
+    // Set up agent state pointer
+    lines.push(`    # Set up agent state pointer`);
+    lines.push(`    mov r12, rdi          # r12 = agent state base`);
+    lines.push(``);
 
-    // Generate prologue
-    const prologueCode = this.generatePrologue(context);
-    lines.push(prologueCode);
-
-    // Generate agent state setup
-    const stateSetupCode = this.generateStateSetup(context);
-    lines.push(stateSetupCode);
-
-    // Generate signal payload setup (only for signal handlers)
-    if (handlerDef.type !== 'cycle') {
-      const payloadSetupCode = this.generatePayloadSetup(context);
-      lines.push(payloadSetupCode);
-    }
-
-    // Compile guard condition (if present)
-    if (handlerDef.guard) {
-      const guardCode = this.generateGuard(handlerDef.guard, context);
-      lines.push(guardCode);
-    }
+    // Reset local variables for this handler
+    this.stmtCompiler.exprCompiler.setHandlerContext(null, null);
+    this.stmtCompiler.setFunctionContext(handlerName);
 
     // Compile handler body
-    const bodyCode = this.generateBody(handlerDef.body, context);
-    lines.push(bodyCode);
-
-    // Generate epilogue
-    const epilogueCode = this.generateEpilogue(context);
-    lines.push(epilogueCode);
-
-    lines.push(``);
-
-    return {
-      label: handlerLabel,
-      code: lines.join('\n'),
-      context: context
-    };
-  }
-
-  /**
-   * Generate function prologue
-   * Sets up stack frame and saves registers
-   */
-  generatePrologue(context) {
-    const lines = [];
-
-    lines.push(`    # Prologue`);
-    lines.push(`    push rbp                  # save base pointer`);
-    lines.push(`    mov rbp, rsp              # set up stack frame`);
-
-    // Calculate local variable space needed
-    // For now, allocate a fixed amount (can optimize later)
-    const localSpace = 64; // 64 bytes for local variables
-    if (localSpace > 0) {
-      lines.push(`    sub rsp, ${localSpace}            # allocate local space`);
-    }
-
-    // Save callee-saved registers we're using (r12-r15)
-    // r14 and r15 are used by tidal_cycle_loop for cycle/empty counters
-    lines.push(`    push r12                  # save r12 (will use for state)`);
-    lines.push(`    push r13                  # save r13 (will use for payload)`);
-    lines.push(`    push r14                  # save r14 (used by emit statements)`);
-    lines.push(`    push r15                  # save r15 (reserved)`);
-    lines.push(``);
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Generate agent state setup
-   * Loads agent state base address into r12
-   */
-  generateStateSetup(context) {
-    const lines = [];
-    const agentId = context.agentId;
-
-    lines.push(`    # Agent state setup`);
-    lines.push(`    lea r12, [agent_${agentId}_state]    # r12 = agent state base`);
-    lines.push(``);
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Generate signal payload setup
-   * Extracts payload pointer from rdi and stores in r13
-   */
-  generatePayloadSetup(context) {
-    const lines = [];
-
-    if (context.signalBinding) {
-      lines.push(`    # Signal payload setup`);
-      lines.push(`    mov r13, rdi              # r13 = signal payload (${context.signalBinding})`);
-      lines.push(``);
-    }
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Generate guard condition check
-   * If guard fails, skip handler body
-   */
-  generateGuard(guardExpr, context) {
-    const lines = [];
-    const skipLabel = `.guard_skip_${this.makeUniqueId()}`;
-
-    lines.push(`    # Guard condition`);
-
-    // Compile guard expression
-    const guardCode = this.exprCompiler.compile(guardExpr, context);
-    lines.push(guardCode);
-
-    // Test result
-    lines.push(`    test rax, rax             # check guard`);
-    lines.push(`    jz ${skipLabel}           # skip if guard fails`);
-    lines.push(``);
-
-    // Store skip label in context for epilogue
-    context.guardSkipLabel = skipLabel;
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Generate handler body
-   * Compiles all statements in the handler
-   */
-  generateBody(body, context) {
-    const lines = [];
-
     lines.push(`    # Handler body`);
-
-    // Body is an array of statements
-    if (Array.isArray(body)) {
-      for (const stmt of body) {
-        const stmtCode = this.stmtCompiler.compile(stmt, context);
-        if (stmtCode) {
-          lines.push(stmtCode);
-        }
-      }
-    } else if (body) {
-      // Single statement
-      const stmtCode = this.stmtCompiler.compile(body, context);
-      if (stmtCode) {
-        lines.push(stmtCode);
-      }
-    }
-
+    lines.push(...this.stmtCompiler.compileBlock(restBody));
     lines.push(``);
 
-    // Add guard skip label if guard was present
-    if (context.guardSkipLabel) {
-      lines.push(`${context.guardSkipLabel}:`);
+    // Allocate stack space for local variables if needed
+    const stackSpace = this.stmtCompiler.exprCompiler.stackOffset;
+    if (stackSpace > 0) {
+      // Insert stack allocation after prologue
+      const allocLine = `    sub rsp, ${stackSpace}        # Allocate space for local variables`;
+      lines.splice(8, 0, allocLine);  // Insert after push r15
+      lines.splice(9, 0, ``);
     }
 
-    return lines.join('\n');
+    // Deallocate stack space for local variables if needed
+    if (stackSpace > 0) {
+      lines.push(`    add rsp, ${stackSpace}        # Deallocate local variables`);
+    }
+
+    // Epilogue
+    lines.push(`.${handlerName}_return:`);
+    lines.push(`    # Epilogue`);
+    lines.push(`    pop r15`);
+    lines.push(`    pop r14`);
+    lines.push(`    pop r13`);
+    lines.push(`    pop r12`);
+    lines.push(`    pop rbp`);
+    lines.push(`    ret`);
+    lines.push(``);
+
+    return { name: handlerName, code: lines };
   }
 
   /**
-   * Generate function epilogue
-   * Restores registers and returns
+   * Generate empty REST handler
    */
-  generateEpilogue(context) {
+  generateEmptyRestHandler() {
     const lines = [];
+    const handlerName = `handler_${this.agentId}_rest`;
 
+    lines.push(`# ================================================================`);
+    lines.push(`# Empty REST Handler: ${this.agentId}`);
+    lines.push(`# ================================================================`);
+    lines.push(`${handlerName}:`);
+    lines.push(`    ret`);
+    lines.push(``);
+
+    return { name: handlerName, code: lines };
+  }
+
+  /**
+   * Generate signal handler
+   * Called when the agent receives a signal of a specific frequency
+   */
+  generateSignalHandler(frequency) {
+    const lines = [];
+    const agent = this.symbolTable.agents.get(this.agentId);
+
+    if (!agent) {
+      throw new Error(`Unknown agent: ${this.agentId}`);
+    }
+
+    const handlerInfo = agent.handlers.signal.get(frequency);
+    if (!handlerInfo) {
+      throw new Error(`No handler for frequency ${frequency} on agent ${this.agentId}`);
+    }
+
+    const handlerName = `handler_${this.agentId}_${frequency}`;
+    const paramName = handlerInfo.paramName || 'msg';
+
+    lines.push(`# ================================================================`);
+    lines.push(`# Signal Handler: ${this.agentId} on ${frequency}`);
+    lines.push(`# Handles incoming signals of frequency ${frequency}`);
+    lines.push(`# Arguments: rdi = agent state pointer, rsi = signal payload pointer`);
+    lines.push(`# Parameter: ${paramName}`);
+    lines.push(`# ================================================================`);
+    lines.push(`${handlerName}:`);
+
+    // Prologue
+    lines.push(`    push rbp`);
+    lines.push(`    mov rbp, rsp`);
+    lines.push(`    push r12              # Save r12`);
+    lines.push(`    push r13              # Save r13`);
+    lines.push(`    push r14              # Save r14`);
+    lines.push(`    push r15              # Save r15`);
+    lines.push(``);
+
+    // Set up pointers
+    lines.push(`    # Set up pointers`);
+    lines.push(`    mov r12, rdi          # r12 = agent state base`);
+    lines.push(`    mov r13, rsi          # r13 = signal payload pointer`);
+    lines.push(``);
+
+    // Set handler context for signal parameter access
+    this.stmtCompiler.setHandlerContext(frequency, paramName);
+    this.stmtCompiler.setFunctionContext(handlerName);
+
+    // Compile handler body
+    lines.push(`    # Handler body`);
+    lines.push(...this.stmtCompiler.compileBlock(handlerInfo.body));
+    lines.push(``);
+
+    // Allocate stack space for local variables if needed
+    const stackSpace = this.stmtCompiler.exprCompiler.stackOffset;
+    if (stackSpace > 0) {
+      // Insert stack allocation after prologue
+      const allocLine = `    sub rsp, ${stackSpace}        # Allocate space for local variables`;
+      lines.splice(9, 0, allocLine);  // Insert after push r15
+      lines.splice(10, 0, ``);
+    }
+
+    // Deallocate stack space for local variables if needed
+    if (stackSpace > 0) {
+      lines.push(`    add rsp, ${stackSpace}        # Deallocate local variables`);
+    }
+
+    // Epilogue
+    lines.push(`.${handlerName}_return:`);
+    lines.push(`    # Epilogue`);
+    lines.push(`    pop r15`);
+    lines.push(`    pop r14`);
+    lines.push(`    pop r13`);
+    lines.push(`    pop r12`);
+    lines.push(`    pop rbp`);
+    lines.push(`    ret`);
+    lines.push(``);
+
+    return { name: handlerName, code: lines };
+  }
+
+  /**
+   * Generate a rule function (helper function)
+   * Rules are local functions that can be called by handlers
+   */
+  generateRuleFunction(ruleName) {
+    const lines = [];
+    const agent = this.symbolTable.agents.get(this.agentId);
+
+    if (!agent) {
+      throw new Error(`Unknown agent: ${this.agentId}`);
+    }
+
+    const rule = agent.rules.get(ruleName);
+    if (!rule) {
+      throw new Error(`Unknown rule: ${ruleName}`);
+    }
+
+    const functionName = `rule_${this.agentId}_${ruleName}`;
+
+    lines.push(`# ================================================================`);
+    lines.push(`# Rule: ${this.agentId}.${ruleName}`);
+    lines.push(`# Parameters: ${rule.params.map(p => `${p.name}: ${p.type}`).join(', ')}`);
+    lines.push(`# Returns: ${rule.returnType}`);
+    lines.push(`# ================================================================`);
+    lines.push(`${functionName}:`);
+
+    // Set up parameter context FIRST (before generating prologue)
+    // This way we know how much stack space we need
+    // For rules, stack frame offset is 32 (4 saved registers * 8 bytes each)
+    this.stmtCompiler.exprCompiler.setHandlerContext(null, null);
+    this.stmtCompiler.exprCompiler.setStackFrameOffset(32);
+    this.stmtCompiler.setFunctionContext(functionName);
+
+    // Add parameters as local variables to calculate stack space needed
+    const argRegs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9'];
+    console.error(`[DEBUG] Rule ${ruleName} has ${rule.params.length} params:`, JSON.stringify(rule.params));
+    for (let i = 0; i < rule.params.length; i++) {
+      const param = rule.params[i];
+      // Pass type information for parameters so field access works
+      console.error(`[DEBUG] Adding param ${param.name} with type ${param.type}`);
+      this.stmtCompiler.exprCompiler.addLocalVar(param.name, 8, param.type);
+    }
+
+    // Compile rule body (this might add more local variables)
+    const bodyLines = this.stmtCompiler.compileBlock(rule.body);
+
+    // Now we know the stack space needed
+    const stackSpace = this.stmtCompiler.exprCompiler.stackOffset;
+
+    // Generate prologue with correct stack allocation
+    // Standard prologue: push rbp, set rbp, save callee-saved regs, THEN allocate locals
+    lines.push(`    push rbp`);
+    lines.push(`    mov rbp, rsp`);
+    lines.push(`    push r12              # Save r12`);
+    lines.push(`    push r13              # Save r13`);
+    lines.push(`    push r14              # Save r14`);
+    lines.push(`    push r15              # Save r15`);
+    if (stackSpace > 0) {
+      lines.push(`    sub rsp, ${stackSpace}        # Allocate space for local variables`);
+    }
+    lines.push(``);
+
+    // Note: r12 should already point to agent state (from caller)
+    lines.push(`    # Agent state pointer is in r12 (from caller)`);
+    lines.push(``);
+
+    // Generate parameter initialization
+    // Note: offsets include stack frame offset set above
+    for (let i = 0; i < rule.params.length; i++) {
+      const param = rule.params[i];
+      const offset = this.stmtCompiler.exprCompiler.tempVars.get(param.name) + this.stmtCompiler.exprCompiler.stackFrameOffset;
+      lines.push(`    # Parameter ${param.name}: ${param.type}`);
+
+      if (i < 6) {
+        // Parameters 0-5 come from registers
+        lines.push(`    mov [rbp - ${offset}], ${argRegs[i]}`);
+      } else {
+        // Parameters 6+ come from stack (above saved rbp)
+        // Stack layout: ... [arg7] [arg6] [return addr] [saved rbp] <- rbp
+        // Offset from rbp: 16 + (param_index - 6) * 8
+        const stackParamOffset = 16 + (i - 6) * 8;
+        lines.push(`    mov rax, [rbp + ${stackParamOffset}]  # Load from stack`);
+        lines.push(`    mov [rbp - ${offset}], rax            # Store to local`);
+      }
+    }
+    lines.push(``);
+
+    // Add rule body
+    lines.push(`    # Rule body`);
+    lines.push(...bodyLines);
+    lines.push(``);
+
+    // Epilogue
+    lines.push(`.${functionName}_return:`);
     lines.push(`    # Epilogue`);
 
-    // Restore callee-saved registers (in reverse order of pushing)
-    lines.push(`    pop r15                   # restore r15`);
-    lines.push(`    pop r14                   # restore r14`);
-    lines.push(`    pop r13                   # restore r13`);
-    lines.push(`    pop r12                   # restore r12`);
+    // Deallocate stack space for local variables if needed
+    if (stackSpace > 0) {
+      lines.push(`    add rsp, ${stackSpace}        # Deallocate local variables`);
+    }
 
-    // Restore stack frame
-    lines.push(`    mov rsp, rbp              # restore stack pointer`);
-    lines.push(`    pop rbp                   # restore base pointer`);
+    lines.push(`    pop r15`);
+    lines.push(`    pop r14`);
+    lines.push(`    pop r13`);
+    lines.push(`    pop r12`);
+    lines.push(`    pop rbp`);
+    lines.push(`    ret`);
+    lines.push(``);
 
-    // Return success
-    lines.push(`    xor rax, rax              # return 0 (success)`);
-    lines.push(`    ret                       # return`);
-
-    return lines.join('\n');
+    return { name: functionName, code: lines };
   }
 
   /**
-   * Generate unique ID for labels
+   * Generate all handlers for this agent
    */
-  makeUniqueId() {
-    if (!this._uniqueCounter) {
-      this._uniqueCounter = 0;
-    }
-    return this._uniqueCounter++;
-  }
-
-  /**
-   * Generate all handlers for an agent
-   * @param {string} agentId - Agent instance ID
-   * @returns {Array} Array of handler objects
-   */
-  generateAllHandlers(agentId) {
-    const agent = this.symbolTable.agents.get(agentId);
-    if (!agent) {
-      throw new Error(`Agent not found: ${agentId}`);
-    }
-
+  generateAllHandlers() {
     const handlers = [];
-    const typeDef = agent.typeDef;
+    const agent = this.symbolTable.agents.get(this.agentId);
 
-    // Generate code for each handler
-    for (const handlerDef of typeDef.handlers) {
-      if (handlerDef.type === 'signal' || handlerDef.type === 'cycle') {
-        const handler = this.generateHandler(agentId, handlerDef);
-        handlers.push(handler);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${this.agentId}`);
+    }
+
+    // Generate rule functions first (so they can be called by handlers)
+    if (agent.rules) {
+      for (const ruleName of agent.rules.keys()) {
+        handlers.push(this.generateRuleFunction(ruleName));
       }
+    }
+
+    // Generate REST handler
+    handlers.push(this.generateRestHandler());
+
+    // Generate signal handlers
+    for (const frequency of agent.handlers.signal.keys()) {
+      handlers.push(this.generateSignalHandler(frequency));
+    }
+
+    // TODO: Generate timer handlers
+
+    // Collect string literals from the statement compiler's expression compiler
+    for (const handler of handlers) {
+      handler.stringLiterals = this.stmtCompiler.exprCompiler.stringLiterals;
     }
 
     return handlers;
   }
 
   /**
-   * Generate handlers for all agents in the network
-   * @returns {Array} Array of all handler objects
+   * Generate handler dispatch table
+   * Maps (frequency -> handler function pointer)
    */
-  generateAllNetworkHandlers() {
-    const allHandlers = [];
+  generateDispatchTable() {
+    const lines = [];
+    const agent = this.symbolTable.agents.get(this.agentId);
 
-    for (const [agentId, agent] of this.symbolTable.agents.entries()) {
-      const agentHandlers = this.generateAllHandlers(agentId);
-      allHandlers.push(...agentHandlers);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${this.agentId}`);
     }
 
-    return allHandlers;
+    lines.push(`# ================================================================`);
+    lines.push(`# Dispatch Table: ${this.agentId}`);
+    lines.push(`# Maps frequency ID to handler function pointer`);
+    lines.push(`# ================================================================`);
+    lines.push(`.data`);
+    lines.push(`dispatch_table_${this.agentId}:`);
+
+    // Create array of function pointers indexed by frequency ID
+    const freqCount = this.symbolTable.frequencies.size;
+    const handlers = new Array(freqCount).fill(null);
+
+    // Fill in signal handlers
+    for (const [frequency, handlerInfo] of agent.handlers.signal.entries()) {
+      const freqInfo = this.symbolTable.frequencies.get(frequency);
+      if (freqInfo) {
+        handlers[freqInfo.id] = `handler_${this.agentId}_${frequency}`;
+      }
+    }
+
+    // Generate the table
+    for (let i = 0; i < freqCount; i++) {
+      if (handlers[i]) {
+        lines.push(`    .quad ${handlers[i]}`);
+      } else {
+        lines.push(`    .quad 0              # No handler for frequency ${i}`);
+      }
+    }
+
+    lines.push(``);
+
+    return lines;
   }
 }
 
-module.exports = { HandlerCodeGenerator };
+module.exports = { HandlerCodegen };

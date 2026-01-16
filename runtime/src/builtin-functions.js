@@ -51,6 +51,31 @@ class BuiltinFunctions {
   }
 
   /**
+   * Get character at index as a single-character string
+   * @param {string} s - Source string
+   * @param {number} index - Index of character
+   * @returns {string} Single character string (or empty if out of bounds)
+   */
+  static char_at(s, index) {
+    const str = s === null || s === undefined ? '' : String(s);
+    const idx = Math.floor(index);
+    if (idx < 0 || idx >= str.length) {
+      return '';
+    }
+    return str.charAt(idx);
+  }
+
+  /**
+   * Alias for char_at (used by lexer)
+   * @param {string} s - Source string
+   * @param {number} index - Index of character
+   * @returns {string} Single character string
+   */
+  static string_char_at(s, index) {
+    return BuiltinFunctions.char_at(s, index);
+  }
+
+  /**
    * Check if two strings are equal
    * @param {*} s1 - First string
    * @param {*} s2 - Second string
@@ -399,6 +424,27 @@ class BuiltinFunctions {
       throw new Error('map_has: First argument must be a Map');
     }
     return map.has(key);
+  }
+
+  /**
+   * Alias for map_set (used by historical compiler)
+   * @param {Map} map - Map
+   * @param {*} key - Key
+   * @param {*} value - Value
+   * @returns {Map} The map
+   */
+  static map_insert(map, key, value) {
+    return BuiltinFunctions.map_set(map, key, value);
+  }
+
+  /**
+   * Alias for map_has (used by historical compiler)
+   * @param {Map} map - Map
+   * @param {*} key - Key
+   * @returns {boolean} True if key exists
+   */
+  static map_contains(map, key) {
+    return BuiltinFunctions.map_has(map, key);
   }
 
   /**
@@ -1065,6 +1111,124 @@ class BuiltinFunctions {
   }
 
   // ============================================================================
+  // FILE I/O OPERATIONS (2 functions)
+  // ============================================================================
+
+  /**
+   * Read entire file contents as string
+   * @param {string} path - File path to read
+   * @returns {string} File contents (or empty string on error)
+   */
+  static read_file(path) {
+    try {
+      const fs = require('fs');
+      const filePath = path === null || path === undefined ? '' : String(path);
+      if (!filePath) {
+        return '';
+      }
+      return fs.readFileSync(filePath, 'utf8');
+    } catch (error) {
+      // Return empty string on error (file not found, permission denied, etc.)
+      return '';
+    }
+  }
+
+  /**
+   * Write string contents to file (overwrites if exists)
+   * @param {string} path - File path to write
+   * @param {string} contents - Contents to write
+   * @returns {number} 1 on success, 0 on error
+   */
+  static write_file(path, contents) {
+    try {
+      const fs = require('fs');
+      const filePath = path === null || path === undefined ? '' : String(path);
+      const data = contents === null || contents === undefined ? '' : String(contents);
+      if (!filePath) {
+        return 0;
+      }
+      fs.writeFileSync(filePath, data, 'utf8');
+      return 1; // Success
+    } catch (error) {
+      // Return 0 on error (permission denied, disk full, etc.)
+      return 0;
+    }
+  }
+
+  /**
+   * Get current Unix timestamp in milliseconds
+   * @returns {number} Unix timestamp (milliseconds since epoch)
+   */
+  static time_now() {
+    return Date.now();
+  }
+
+  /**
+   * Encode value as JSON string
+   * @param {*} value - Value to encode (object, array, string, number, boolean, null)
+   * @returns {string} JSON string representation
+   */
+  static json_encode(value) {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return '{}';
+    }
+  }
+
+  /**
+   * Get value from map or return default if key doesn't exist
+   * @param {Map|Object} map - Map or object
+   * @param {*} key - Key to look up
+   * @param {*} defaultValue - Default value to return if key not found
+   * @returns {*} Value from map or default value
+   */
+  static map_get_or_default(map, key, defaultValue) {
+    if (!map) {
+      return defaultValue;
+    }
+    if (map instanceof Map) {
+      return map.has(key) ? map.get(key) : defaultValue;
+    } else if (typeof map === 'object') {
+      const strKey = String(key);
+      return strKey in map ? map[strKey] : defaultValue;
+    }
+    return defaultValue;
+  }
+
+  /**
+   * Decode hexadecimal string to byte array
+   * @param {string} hexStr - Hex string (e.g., "48656c6c6f")
+   * @returns {Array<number>} Array of byte values (0-255)
+   */
+  static hex_decode(hexStr) {
+    const str = hexStr === null || hexStr === undefined ? '' : String(hexStr);
+    const result = [];
+
+    // Remove whitespace and validate hex characters
+    const cleanHex = str.replace(/\s/g, '');
+
+    if (cleanHex.length % 2 !== 0) {
+      // Odd number of hex digits - pad with leading zero
+      return BuiltinFunctions.hex_decode('0' + cleanHex);
+    }
+
+    for (let i = 0; i < cleanHex.length; i += 2) {
+      const hexByte = cleanHex.substr(i, 2);
+      const byteValue = parseInt(hexByte, 16);
+
+      if (isNaN(byteValue)) {
+        // Invalid hex character - return empty array
+        return [];
+      }
+
+      result.push(byteValue);
+    }
+
+    return result;
+  }
+
+  // ============================================================================
   // UTILITY METHODS
   // ============================================================================
 
@@ -1086,6 +1250,7 @@ class BuiltinFunctions {
       string_trim: BuiltinFunctions.string_trim,
       string_replace: BuiltinFunctions.string_replace,
       char_at: BuiltinFunctions.char_at,
+      string_char_at: BuiltinFunctions.string_char_at,
       string_from_code: BuiltinFunctions.string_from_code,
       string_code_at: BuiltinFunctions.string_code_at,
 
@@ -1108,6 +1273,8 @@ class BuiltinFunctions {
       map_get: BuiltinFunctions.map_get,
       map_delete: BuiltinFunctions.map_delete,
       map_has: BuiltinFunctions.map_has,
+      map_insert: BuiltinFunctions.map_insert,
+      map_contains: BuiltinFunctions.map_contains,
       map_keys: BuiltinFunctions.map_keys,
       map_values: BuiltinFunctions.map_values,
       map_len: BuiltinFunctions.map_len,
@@ -1163,6 +1330,16 @@ class BuiltinFunctions {
       bin_from_hex: BuiltinFunctions.bin_from_hex,
       bin_to_binary: BuiltinFunctions.bin_to_binary,
       bin_from_binary: BuiltinFunctions.bin_from_binary,
+
+      // File I/O operations
+      read_file: BuiltinFunctions.read_file,
+      write_file: BuiltinFunctions.write_file,
+
+      // Utility functions
+      time_now: BuiltinFunctions.time_now,
+      json_encode: BuiltinFunctions.json_encode,
+      map_get_or_default: BuiltinFunctions.map_get_or_default,
+      hex_decode: BuiltinFunctions.hex_decode,
     };
   }
 
@@ -1234,9 +1411,12 @@ class BuiltinFunctions {
         binary: [
           'bin_and', 'bin_or', 'bin_xor', 'bin_not', 'bin_lshift', 'bin_rshift',
           'bin_to_hex', 'bin_from_hex', 'bin_to_binary', 'bin_from_binary'
+        ],
+        fileio: [
+          'read_file', 'write_file'
         ]
       },
-      totalFunctions: 73
+      totalFunctions: 75
     };
   }
 }

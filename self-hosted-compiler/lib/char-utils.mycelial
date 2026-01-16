@@ -1,0 +1,138 @@
+/**
+ * Character Utilities for Mycelial Compiler
+ *
+ * Provides character classification and manipulation functions
+ * needed by the lexer and parser.
+ */
+
+network CharUtils {
+
+  frequencies {
+    // Input: character to classify
+    check_char {
+      ch: string
+      category: string  // "digit", "alpha", "whitespace", etc.
+    }
+
+    // Output: classification result
+    char_result {
+      ch: string
+      category: string
+      is_match: boolean
+    }
+
+    // Request to convert character
+    convert_char {
+      ch: string
+      conversion: string  // "to_upper", "to_lower"
+    }
+
+    // Converted character result
+    converted_char {
+      original: string
+      converted: string
+    }
+  }
+
+  hyphae {
+    /**
+     * Classifier agent - determines character categories
+     */
+    hyphal classifier {
+      state {
+        last_check: string = ""
+      }
+
+      on signal(check_char, req) {
+        state.last_check = req.ch
+
+        let result = false
+
+        if req.category == "digit" {
+          result = is_digit(req.ch)
+        }
+
+        if req.category == "alpha" {
+          result = is_alpha(req.ch)
+        }
+
+        if req.category == "alphanum" {
+          result = is_alpha(req.ch) || is_digit(req.ch)
+        }
+
+        if req.category == "whitespace" {
+          result = is_whitespace(req.ch)
+        }
+
+        if req.category == "newline" {
+          result = req.ch == "\n"
+        }
+
+        if req.category == "underscore" {
+          result = req.ch == "_"
+        }
+
+        if req.category == "quote" {
+          result = req.ch == "\"" || req.ch == "'"
+        }
+
+        if req.category == "delimiter" {
+          result = is_delimiter(req.ch)
+        }
+
+        emit char_result {
+          ch: req.ch
+          category: req.category
+          is_match: result
+        }
+      }
+
+      on signal(convert_char, req) {
+        let converted = req.ch
+
+        if req.conversion == "to_upper" {
+          converted = upper(req.ch)
+        }
+
+        if req.conversion == "to_lower" {
+          converted = lower(req.ch)
+        }
+
+        emit converted_char {
+          original: req.ch
+          converted: converted
+        }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn classifier as C1
+
+    socket input -> C1 (frequency: check_char)
+    socket input -> C1 (frequency: convert_char)
+    socket C1 -> output (frequency: char_result)
+    socket C1 -> output (frequency: converted_char)
+  }
+}
+
+/**
+ * Helper functions (these would be builtins or imported)
+ */
+
+// Check if character is digit (0-9)
+// In real implementation, this would check ASCII values
+// For now, we'll use string operations
+// is_digit(ch: string) -> boolean
+
+// Check if character is alphabetic (a-z, A-Z)
+// is_alpha(ch: string) -> boolean
+
+// Check if character is whitespace (space, tab, newline)
+// is_whitespace(ch: string) -> boolean
+
+// Check if character is a delimiter ({, }, (, ), [, ], :, ,, etc.)
+// is_delimiter(ch: string) -> boolean

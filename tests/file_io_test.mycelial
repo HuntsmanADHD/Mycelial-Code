@@ -1,0 +1,37 @@
+network FileIOTest {
+  frequencies {
+    start {}
+
+    output {
+      message: string
+    }
+  }
+
+  hyphae {
+    hyphal file_handler {
+      state {
+        result: u32 = 0
+      }
+
+      on signal(start, s) {
+        let test_path = "/tmp/mycelial_test.txt"
+        let write_content = "Hello from Mycelial!"
+
+        let write_result = write_file(test_path, write_content)
+        let read_content = read_file(test_path)
+
+        emit output { message: format("Write: {} Read: {}", write_result, read_content) }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn file_handler as F1
+
+    socket input -> F1 (frequency: start)
+    socket F1 -> output
+  }
+}

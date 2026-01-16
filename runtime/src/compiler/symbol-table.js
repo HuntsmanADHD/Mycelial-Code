@@ -1,14 +1,10 @@
 /**
- * Symbol Table & Memory Layout Analyzer
+ * Mycelial Symbol Table Builder
  *
- * Analyzes Mycelial network AST and builds:
- * - Symbol table with all agents, frequencies, handlers
- * - Memory layout (offsets for agent states, queues)
- * - Routing table from socket definitions
- * - Type information
+ * Analyzes network AST and builds symbol tables for code generation
  *
  * @author Claude Sonnet 4.5
- * @date 2026-01-09
+ * @date 2026-01-15
  */
 
 class SymbolTable {
@@ -16,334 +12,514 @@ class SymbolTable {
     this.network = networkAST;
 
     // Symbol tables
-    this.frequencies = new Map();      // frequency_name -> { fields: [...] }
-    this.hyphalTypes = new Map();      // hyphal_type -> { state: [...], handlers: [...] }
-    this.agents = new Map();           // agent_id -> { type, stateOffset, stateSize }
-    this.handlers = [];                // [{ agent, frequency, label, handler }]
-    this.timedHandlers = [];           // [{ agent, cycleNumber, label, handler }]
-    this.routingTable = new Map();     // agent_id.frequency -> [dest_agent_ids]
-    this.fruitingBodies = new Set();   // Set of fruiting body names
+    this.frequencies = new Map();      // frequency name -> { id, fields, size }
+    this.types = new Map();             // type name -> { fields, size }
+    this.hyphalTypes = new Map();       // hyphal type -> { handlers, stateFields, stateSize }
+    this.agents = new Map();            // agent id -> { hyphalType, stateOffset, stateSize }
+    this.routingTable = [];             // [{source, target, frequency}]
+    this.fruitingBodies = new Map();    // frequency -> {input: bool, output: bool}
 
     // Memory layout
-    this.memoryLayout = {
-      agentStatesBase: 0x2000,   // Start of agent state data
-      signalQueuesBase: 0x3000,  // Start of signal queue metadata
-      signalPoolBase: 0x4000,    // Start of signal pool storage
-      heapBase: 0x10000,         // Start of dynamic heap
+    this.totalStateSize = 0;
+    this.agentStateOffsets = new Map(); // agent id -> offset in .data section
 
-      totalAgentStateSize: 0,
-      totalQueueSize: 0,
-      totalPoolSize: 8192        // 8KB signal pool
-    };
-
-    // Type sizes (in bytes)
-    this.typeSizes = {
-      'u8': 1, 'i8': 1,
-      'u16': 2, 'i16': 2,
-      'u32': 4, 'i32': 4, 'f32': 4,
-      'u64': 8, 'i64': 8, 'f64': 8,
-      'boolean': 1, 'bool': 1,
-      'string': 8,     // Pointer (8 bytes)
-      'pointer': 8
+    // Statistics
+    this.stats = {
+      frequencyCount: 0,
+      hyphalTypeCount: 0,
+      agentCount: 0,
+      handlerCount: 0,
+      timedHandlerCount: 0,
+      socketCount: 0,
+      fruitingBodyCount: 0
     };
   }
 
   /**
-   * Analyze the network AST and build symbol table
+   * Build complete symbol table from network AST
    */
-  analyze() {
-    this.log('Starting symbol table analysis');
+  build() {
+    console.error('[SYMBOL-TABLE] Building symbol table...');
 
-    // Phase 1: Collect frequency definitions
-    this.collectFrequencies();
+    // Phase 1: Analyze type definitions
+    this.analyzeTypes();
 
-    // Phase 2: Collect hyphal type definitions
-    this.collectHyphalTypes();
+    // Phase 2: Analyze frequencies
+    this.analyzeFrequencies();
 
-    // Phase 3: Collect agent instances (spawns)
-    this.collectAgents();
+    // Phase 3: Analyze hyphal types and their state
+    this.analyzeHyphae();
 
-    // Phase 4: Collect fruiting bodies
-    this.collectFruitingBodies();
+    // Phase 4: Analyze agent instances (spawns)
+    this.analyzeAgents();
 
     // Phase 5: Build routing table from sockets
     this.buildRoutingTable();
 
-    // Phase 6: Calculate memory layout
+    // Phase 6: Analyze fruiting bodies
+    this.analyzeFruitingBodies();
+
+    // Phase 7: Calculate memory layout
     this.calculateMemoryLayout();
 
-    // Phase 7: Build handler list
-    this.buildHandlerList();
-
-    this.log('Symbol table analysis complete');
-    this.printSummary();
+    this.logSummary();
 
     return this;
   }
 
   /**
-   * Collect frequency definitions
+   * Analyze type definitions (structs and enums)
    */
-  collectFrequencies() {
-    this.log('Collecting frequencies');
+  analyzeTypes() {
+    if (!this.network.types) return;
 
-    if (!this.network.frequencies) {
-      return;
-    }
+    for (const [typeName, typeDef] of Object.entries(this.network.types)) {
+      if (typeDef.type === 'enum') {
+        // Enum type: store variant info including data types
+        const variantMap = new Map();
+        let maxDataSize = 0;
 
-    for (const [name, def] of Object.entries(this.network.frequencies)) {
-      // Fields are in an array
-      const fields = def.fields || [];
+        if (typeDef.variants && Array.isArray(typeDef.variants)) {
+          typeDef.variants.forEach((variant, index) => {
+            // Handle both old format (string) and new format (object with name and dataType)
+            const variantName = typeof variant === 'string' ? variant : variant.name;
+            const dataType = typeof variant === 'object' ? variant.dataType : null;
 
-      this.frequencies.set(name, {
-        name: name,
-        fields: fields.map(f => ({
-          name: f.name,
-          type: f.type,
-          offset: 0  // Will calculate later
-        }))
-      });
+            let dataSize = 0;
+            if (dataType) {
+              // Calculate size of the data type
+              dataSize = this.getTypeSize(dataType);
+              maxDataSize = Math.max(maxDataSize, dataSize);
+            }
 
-      this.log(`  - ${name}: ${fields.length} fields`);
-    }
-  }
-
-  /**
-   * Collect hyphal type definitions
-   */
-  collectHyphalTypes() {
-    this.log('Collecting hyphal types');
-
-    if (!this.network.hyphae) {
-      return;
-    }
-
-    for (const [typeName, def] of Object.entries(this.network.hyphae)) {
-      const stateFields = def.state || [];
-      const handlers = def.handlers || [];
-
-      this.hyphalTypes.set(typeName, {
-        name: typeName,
-        state: stateFields,
-        handlers: handlers
-      });
-
-      this.log(`  - ${typeName}: ${stateFields.length} state fields, ${handlers.length} handlers`);
-    }
-  }
-
-  /**
-   * Collect agent instances from spawns
-   */
-  collectAgents() {
-    this.log('Collecting agents');
-
-    if (!this.network.spawns) {
-      return;
-    }
-
-    for (const spawn of this.network.spawns) {
-      const agentId = spawn.instanceId;
-      const hyphalType = spawn.hyphalType;
-
-      const typeDef = this.hyphalTypes.get(hyphalType);
-      if (!typeDef) {
-        throw new Error(`Unknown hyphal type: ${hyphalType}`);
-      }
-
-      this.agents.set(agentId, {
-        id: agentId,
-        type: hyphalType,
-        typeDef: typeDef,
-        stateOffset: 0,  // Will calculate later
-        stateSize: 0     // Will calculate later
-      });
-
-      this.log(`  - ${agentId}: type=${hyphalType}`);
-    }
-  }
-
-  /**
-   * Collect fruiting bodies
-   */
-  collectFruitingBodies() {
-    this.log('Collecting fruiting bodies');
-
-    if (!this.network.fruitingBodies) {
-      return;
-    }
-
-    for (const fbName of this.network.fruitingBodies) {
-      this.fruitingBodies.add(fbName);
-      this.log(`  - ${fbName}`);
-    }
-  }
-
-  /**
-   * Build routing table from socket definitions
-   */
-  buildRoutingTable() {
-    this.log('Building routing table');
-
-    if (!this.network.sockets) {
-      return;
-    }
-
-    for (const socket of this.network.sockets) {
-      // Sockets have from/to objects with agent and frequency properties
-      const fromAgent = socket.from.agent;
-      const toAgent = socket.to.agent;
-      const frequency = socket.from.frequency || socket.to.frequency;
-
-      const key = `${fromAgent}.${frequency}`;
-
-      if (!this.routingTable.has(key)) {
-        this.routingTable.set(key, []);
-      }
-
-      // Handle broadcast routing: socket X -> *
-      if (toAgent === '*') {
-        // Add all agents as destinations
-        for (const agentId of this.agents.keys()) {
-          this.routingTable.get(key).push(agentId);
+            variantMap.set(variantName, {
+              ordinal: index,
+              dataType: dataType,
+              dataSize: dataSize
+            });
+          });
         }
-        this.log(`  - ${fromAgent} --[${frequency}]--> * (broadcast to ${this.agents.size} agents)`);
+
+        // Tagged union size: 8 bytes for tag + max data size across all variants
+        const totalSize = 8 + maxDataSize;
+
+        this.types.set(typeName, {
+          kind: 'enum',
+          variants: variantMap,
+          size: totalSize,
+          tagSize: 8,
+          maxDataSize: maxDataSize
+        });
+
+        const dataInfo = maxDataSize > 0 ? ` (with data: ${maxDataSize} bytes)` : '';
+        console.error(`[SYMBOL-TABLE] Type ${typeName}: ${variantMap.size} enum variants, ${totalSize} bytes${dataInfo}`);
       } else {
-        this.routingTable.get(key).push(toAgent);
-        this.log(`  - ${fromAgent} --[${frequency}]--> ${toAgent}`);
+        // Struct type: calculate field offsets
+        const fields = [];
+        let offset = 0;
+
+        if (typeDef.fields && Array.isArray(typeDef.fields)) {
+          for (const field of typeDef.fields) {
+            const size = this.getTypeSize(field.type);
+            fields.push({
+              name: field.name,
+              type: field.type,
+              offset: offset,
+              size: size
+            });
+            offset += size;
+          }
+        }
+
+        this.types.set(typeName, {
+          kind: 'struct',
+          fields: fields,
+          size: offset
+        });
+
+        console.error(`[SYMBOL-TABLE] Type ${typeName}: ${fields.length} fields, ${offset} bytes`);
       }
     }
   }
 
   /**
-   * Calculate memory layout and offsets
+   * Analyze frequency definitions
    */
-  calculateMemoryLayout() {
-    this.log('Calculating memory layout');
+  analyzeFrequencies() {
+    if (!this.network.frequencies) return;
 
-    let currentOffset = this.memoryLayout.agentStatesBase;
+    let freqId = 0;
+    for (const [freqName, freqDef] of Object.entries(this.network.frequencies)) {
+      const fields = [];
+      let offset = 0;
 
-    // Calculate size and offset for each agent's state
-    for (const [agentId, agent] of this.agents.entries()) {
+      if (freqDef.fields && Array.isArray(freqDef.fields)) {
+        for (const field of freqDef.fields) {
+          const size = this.getTypeSize(field.type);
+          fields.push({
+            name: field.name,
+            type: field.type,
+            offset: offset,
+            size: size
+          });
+          offset += size;
+        }
+      }
+
+      this.frequencies.set(freqName, {
+        id: freqId++,
+        fields: fields,
+        size: offset
+      });
+
+      this.stats.frequencyCount++;
+      console.error(`[SYMBOL-TABLE] Frequency ${freqName}: ${fields.length} fields, ${offset} bytes`);
+    }
+  }
+
+  /**
+   * Analyze hyphal types (agent templates)
+   */
+  analyzeHyphae() {
+    if (!this.network.hyphae) return;
+
+    for (const [hyphalName, hyphalDef] of Object.entries(this.network.hyphae)) {
+      // Analyze state fields
+      const stateFields = [];
       let stateSize = 0;
 
-      // Calculate size of state fields
-      for (const field of agent.typeDef.state) {
-        const fieldSize = this.getTypeSize(field.type);
-        stateSize += fieldSize;
-      }
-
-      // 8-byte alignment
-      stateSize = Math.ceil(stateSize / 8) * 8;
-
-      agent.stateOffset = currentOffset;
-      agent.stateSize = stateSize;
-
-      currentOffset += stateSize;
-
-      this.log(`  - ${agentId}: offset=0x${agent.stateOffset.toString(16)}, size=${stateSize} bytes`);
-    }
-
-    this.memoryLayout.totalAgentStateSize = currentOffset - this.memoryLayout.agentStatesBase;
-    this.log(`Total agent state size: ${this.memoryLayout.totalAgentStateSize} bytes`);
-  }
-
-  /**
-   * Build handler list with labels
-   */
-  buildHandlerList() {
-    this.log('Building handler list');
-
-    for (const [agentId, agent] of this.agents.entries()) {
-      for (const handler of agent.typeDef.handlers) {
-        if (handler.type === 'signal') {
-          const label = `handler_${agentId}_${handler.frequency}`;
-
-          this.handlers.push({
-            agent: agentId,
-            frequency: handler.frequency,
-            label: label,
-            handler: handler
+      if (hyphalDef.state && Array.isArray(hyphalDef.state)) {
+        for (const field of hyphalDef.state) {
+          const size = this.getTypeSize(field.type);
+          stateFields.push({
+            name: field.name,
+            type: field.type,
+            offset: stateSize,
+            size: size
           });
-
-          this.log(`  - ${label}: on ${handler.frequency}`);
-        } else if (handler.type === 'cycle') {
-          // Extract cycle number from literal expression if needed
-          let cycleNum = handler.cycleNumber;
-          if (typeof cycleNum === 'object' && cycleNum.type === 'literal') {
-            cycleNum = cycleNum.value;
-          }
-
-          const label = `handler_${agentId}_cycle${cycleNum}`;
-
-          this.timedHandlers.push({
-            agent: agentId,
-            cycleNumber: handler.cycleNumber,
-            label: label,
-            handler: handler
-          });
-
-          this.log(`  - ${label}: on cycle ${cycleNum}`);
+          stateSize += size;
         }
       }
+
+      // Analyze handlers
+      const handlers = {
+        rest: null,
+        signal: new Map(),  // frequency -> handler AST
+        timer: new Map()    // interval -> handler AST
+      };
+
+      if (hyphalDef.handlers && Array.isArray(hyphalDef.handlers)) {
+        for (const handler of hyphalDef.handlers) {
+          if (handler.type === 'rest') {
+            handlers.rest = handler.body;
+            this.stats.handlerCount++;
+          } else if (handler.type === 'signal') {
+            handlers.signal.set(handler.frequency, {
+              paramName: handler.binding,
+              body: handler.body
+            });
+            this.stats.handlerCount++;
+          } else if (handler.type === 'timer') {
+            handlers.timer.set(handler.interval, {
+              body: handler.body
+            });
+            this.stats.timedHandlerCount++;
+          }
+        }
+      }
+
+      // Analyze rule definitions (helper functions)
+      const rules = new Map(); // rule name -> { params, returnType, body }
+      if (hyphalDef.rules && Array.isArray(hyphalDef.rules)) {
+        for (const rule of hyphalDef.rules) {
+          rules.set(rule.name, {
+            params: rule.params || [],
+            returnType: rule.returnType,
+            body: rule.body
+          });
+        }
+      }
+
+      this.hyphalTypes.set(hyphalName, {
+        stateFields: stateFields,
+        stateSize: stateSize,
+        handlers: handlers,
+        rules: rules
+      });
+
+      this.stats.hyphalTypeCount++;
+      console.error(`[SYMBOL-TABLE] Hyphal ${hyphalName}: ${stateFields.length} state fields, ${stateSize} bytes, ${handlers.signal.size} signal handlers`);
     }
   }
 
   /**
-   * Get size of a type in bytes
+   * Analyze agent instances (spawns)
+   */
+  analyzeAgents() {
+    if (!this.network.spawns) return;
+
+    for (const spawn of this.network.spawns) {
+      const hyphalType = this.hyphalTypes.get(spawn.hyphalType);
+
+      if (!hyphalType) {
+        throw new Error(`Unknown hyphal type: ${spawn.hyphalType}`);
+      }
+
+      const agentId = spawn.instanceId || spawn.id;
+
+      this.agents.set(agentId, {
+        hyphalType: spawn.hyphalType,
+        stateFields: hyphalType.stateFields,
+        stateSize: hyphalType.stateSize,
+        handlers: hyphalType.handlers,
+        rules: hyphalType.rules
+      });
+
+      this.stats.agentCount++;
+      console.error(`[SYMBOL-TABLE] Agent ${agentId}: type=${spawn.hyphalType}, state=${hyphalType.stateSize} bytes`);
+    }
+  }
+
+  /**
+   * Build static routing table from socket definitions
+   */
+  buildRoutingTable() {
+    if (!this.network.sockets) return;
+
+    for (const socket of this.network.sockets) {
+      const route = {
+        source: socket.from.agent,
+        target: socket.to.agent,
+        frequency: socket.to.frequency
+      };
+
+      this.routingTable.push(route);
+      this.stats.socketCount++;
+
+      console.error(`[SYMBOL-TABLE] Route: ${socket.from.agent} -> ${socket.to.agent} (${socket.to.frequency})`);
+    }
+  }
+
+  /**
+   * Analyze fruiting bodies (external I/O points)
+   */
+  analyzeFruitingBodies() {
+    if (!this.network.fruitingBodies) return;
+
+    for (const fbName of this.network.fruitingBodies) {
+      // Determine if this is input, output, or both based on socket connections
+      let isInput = false;
+      let isOutput = false;
+
+      for (const socket of this.network.sockets) {
+        // Socket structure: {from: {agent, frequency}, to: {agent, frequency}}
+        if (socket.from && socket.from.agent === fbName) {
+          isInput = true;
+        }
+        if (socket.to && socket.to.agent === fbName) {
+          isOutput = true;
+        }
+      }
+
+      this.fruitingBodies.set(fbName, {
+        input: isInput,
+        output: isOutput
+      });
+
+      this.stats.fruitingBodyCount++;
+      console.error(`[SYMBOL-TABLE] Fruiting body ${fbName}: input=${isInput}, output=${isOutput}`);
+    }
+  }
+
+  /**
+   * Calculate memory layout for all agents
+   */
+  calculateMemoryLayout() {
+    let offset = 0;
+
+    for (const [agentId, agent] of this.agents.entries()) {
+      // Align to 8-byte boundary
+      if (offset % 8 !== 0) {
+        offset += 8 - (offset % 8);
+      }
+
+      this.agentStateOffsets.set(agentId, offset);
+      offset += agent.stateSize;
+
+      console.error(`[SYMBOL-TABLE] Agent ${agentId} state at offset ${this.agentStateOffsets.get(agentId)}, size ${agent.stateSize}`);
+    }
+
+    this.totalStateSize = offset;
+    console.error(`[SYMBOL-TABLE] Total agent state: ${this.totalStateSize} bytes`);
+  }
+
+  /**
+   * Get size in bytes for a type
    */
   getTypeSize(type) {
-    // Handle simple types
-    if (this.typeSizes[type]) {
-      return this.typeSizes[type];
+    // Handle basic types
+    if (type === 'u8' || type === 'i8' || type === 'bool') return 1;
+    if (type === 'u16' || type === 'i16') return 2;
+    if (type === 'u32' || type === 'i32' || type === 'f32') return 4;
+    if (type === 'u64' || type === 'i64' || type === 'f64') return 8;
+    if (type === 'string' || type === 'vec' || type === 'map') return 8; // Pointer
+
+    // Handle custom struct types
+    const customType = this.types.get(type);
+    if (customType) {
+      return customType.size;
     }
 
-    // Handle vec<T>
-    if (type.startsWith('vec<')) {
-      return 24;  // { ptr, len, cap } = 8 + 8 + 8
-    }
-
-    // Handle map<K,V>
-    if (type.startsWith('map<')) {
-      return 24;  // { ptr, len, cap } = 8 + 8 + 8
-    }
-
-    // Default: assume 8 bytes (pointer)
+    // Default to pointer size
+    console.warn(`[SYMBOL-TABLE] Unknown type size for ${type}, defaulting to 8 bytes`);
     return 8;
   }
 
   /**
-   * Get routing destinations for agent + frequency
+   * Get handler for an agent and frequency
    */
-  getRoutingDestinations(agentId, frequency) {
-    const key = `${agentId}.${frequency}`;
-    return this.routingTable.get(key) || [];
+  getHandler(agentId, frequency) {
+    const agent = this.agents.get(agentId);
+    if (!agent) return null;
+
+    return agent.handlers.signal.get(frequency);
   }
 
   /**
-   * Print summary
+   * Get REST handler for an agent
    */
-  printSummary() {
-    console.log('\n=== Symbol Table Summary ===');
-    console.log(`Network: ${this.network.name}`);
-    console.log(`Frequencies: ${this.frequencies.size}`);
-    console.log(`Hyphal Types: ${this.hyphalTypes.size}`);
-    console.log(`Agents: ${this.agents.size}`);
-    console.log(`Signal Handlers: ${this.handlers.length}`);
-    console.log(`Timed Handlers: ${this.timedHandlers.length}`);
-    console.log(`Routing Rules: ${this.routingTable.size}`);
-    console.log(`Fruiting Bodies: ${this.fruitingBodies.size}`);
-    console.log(`Total Agent State: ${this.memoryLayout.totalAgentStateSize} bytes`);
-    console.log('============================\n');
+  getRestHandler(agentId) {
+    const agent = this.agents.get(agentId);
+    if (!agent) return null;
+
+    return agent.handlers.rest;
   }
 
   /**
-   * Log message
+   * Get all routes that target a specific agent
    */
-  log(message) {
-    if (process.env.DEBUG) {
-      console.log(`[SymbolTable] ${message}`);
-    }
+  getIncomingRoutes(agentId) {
+    return this.routingTable.filter(route => route.target === agentId);
+  }
+
+  /**
+   * Get all routes from a specific agent
+   */
+  getOutgoingRoutes(agentId) {
+    return this.routingTable.filter(route => route.source === agentId);
+  }
+
+  /**
+   * Get state field offset for an agent
+   */
+  getStateFieldOffset(agentId, fieldName) {
+    const agent = this.agents.get(agentId);
+    if (!agent) return null;
+
+    const field = agent.stateFields.find(f => f.name === fieldName);
+    return field ? field.offset : null;
+  }
+
+  /**
+   * Get state field type for an agent
+   */
+  getStateFieldType(agentId, fieldName) {
+    const agent = this.agents.get(agentId);
+    if (!agent) return null;
+
+    const field = agent.stateFields.find(f => f.name === fieldName);
+    return field ? field.type : null;
+  }
+
+  /**
+   * Get agent state base offset in .data section
+   */
+  getAgentStateOffset(agentId) {
+    return this.agentStateOffsets.get(agentId) || 0;
+  }
+
+  /**
+   * Get frequency definition by name
+   */
+  getFrequency(freqName) {
+    return this.frequencies.get(freqName);
+  }
+
+  /**
+   * Get field offset within a frequency payload
+   */
+  getFrequencyFieldOffset(freqName, fieldName) {
+    const freq = this.frequencies.get(freqName);
+    if (!freq) return null;
+
+    const field = freq.fields.find(f => f.name === fieldName);
+    return field ? field.offset : null;
+  }
+
+  /**
+   * Get field type within a frequency payload
+   */
+  getFrequencyFieldType(freqName, fieldName) {
+    const freq = this.frequencies.get(freqName);
+    if (!freq) return null;
+
+    const field = freq.fields.find(f => f.name === fieldName);
+    return field ? field.type : null;
+  }
+
+  /**
+   * Check if a function name is a rule for the given agent
+   */
+  isRule(agentId, functionName) {
+    const agent = this.agents.get(agentId);
+    if (!agent || !agent.rules) return false;
+    return agent.rules.has(functionName);
+  }
+
+  /**
+   * Get rule definition for an agent
+   */
+  getRule(agentId, ruleName) {
+    const agent = this.agents.get(agentId);
+    if (!agent || !agent.rules) return null;
+    return agent.rules.get(ruleName);
+  }
+
+  /**
+   * Log symbol table summary
+   */
+  logSummary() {
+    console.error('\n=== Symbol Table Summary ===');
+    console.error(`Network: ${this.network.name}`);
+    console.error(`Frequencies: ${this.stats.frequencyCount}`);
+    console.error(`Hyphal Types: ${this.stats.hyphalTypeCount}`);
+    console.error(`Agents: ${this.stats.agentCount}`);
+    console.error(`Signal Handlers: ${this.stats.handlerCount}`);
+    console.error(`Timed Handlers: ${this.stats.timedHandlerCount}`);
+    console.error(`Routing Rules: ${this.stats.socketCount}`);
+    console.error(`Fruiting Bodies: ${this.stats.fruitingBodyCount}`);
+    console.error(`Total Agent State: ${this.totalStateSize} bytes`);
+    console.error('============================\n');
+  }
+
+  /**
+   * Export symbol table as JSON for debugging
+   */
+  toJSON() {
+    return {
+      network: this.network.name,
+      stats: this.stats,
+      frequencies: Array.from(this.frequencies.entries()).map(([name, data]) => ({name, ...data})),
+      types: Array.from(this.types.entries()).map(([name, data]) => ({name, ...data})),
+      hyphalTypes: Array.from(this.hyphalTypes.entries()).map(([name, data]) => ({name, ...data})),
+      agents: Array.from(this.agents.entries()).map(([id, data]) => ({id, ...data})),
+      routingTable: this.routingTable,
+      fruitingBodies: Array.from(this.fruitingBodies.entries()).map(([name, data]) => ({name, ...data})),
+      memoryLayout: {
+        totalStateSize: this.totalStateSize,
+        agentOffsets: Array.from(this.agentStateOffsets.entries()).map(([id, offset]) => ({id, offset}))
+      }
+    };
   }
 }
 

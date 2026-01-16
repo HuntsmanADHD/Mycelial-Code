@@ -1,907 +1,1094 @@
 /**
- * Expression Compiler
+ * Mycelial Expression Compiler
  *
- * Compiles Mycelial expressions to x86-64 assembly.
- * Implements register allocation and type-aware code generation.
+ * Compiles Mycelial expressions to x86-64 assembly code.
+ * Result is left in rax register (or xmm0 for floats).
  *
- * Register Convention:
- * - rax: Primary accumulator (return value)
- * - rbx, rcx, rdx: Temporary registers
- * - rdi, rsi, rdx, rcx, r8, r9: Function arguments (System V ABI)
- * - r12: Agent state base pointer
- * - r13: Signal payload pointer
- * - r14, r15: Reserved for future use
+ * Register allocation:
+ * - rax: primary result/accumulator
+ * - rbx, rcx, rdx: temporary values
+ * - r12: agent state base pointer (set by handler prologue)
+ * - r13: signal payload pointer (for message field access)
+ * - rdi, rsi, rdx, rcx, r8, r9: function arguments
  *
  * @author Claude Sonnet 4.5
- * @date 2026-01-10
+ * @date 2026-01-15
  */
 
 class ExpressionCompiler {
-  constructor(symbolTable) {
+  constructor(symbolTable, agentId, sharedLabelCounter = null) {
     this.symbolTable = symbolTable;
-    this.labelCounter = 0;
-    this.stringLiterals = new Map();  // string -> label
-    this.stringCounter = 0;
+    this.agentId = agentId;
+    // Use shared label counter if provided, otherwise create local one
+    this.labelCounter = sharedLabelCounter || { count: 0 };
+    this.tempVars = new Map(); // local variable name -> stack offset
+    this.tempVarTypes = new Map(); // local variable name -> type name
+    this.stackOffset = 0; // Current stack offset for locals
+    this.stackFrameOffset = 0; // Base offset for stack frame (for saved registers)
+    this.stringLiterals = []; // Array of {label, value} for string literals
+    // Handler context for signal handlers
+    this.currentFrequency = null;
+    this.currentParamName = null;
   }
 
   /**
-   * Compile an expression to assembly
-   * @param {Object} expr - Expression AST node
-   * @param {Object} context - Compilation context (agent, handler, locals)
-   * @returns {string} Assembly code that leaves result in rax
+   * Set statement compiler reference (for circular dependency)
    */
-  compile(expr, context) {
-    if (!expr) {
-      throw new Error('Expression is null or undefined');
-    }
+  setStatementCompiler(stmtCompiler) {
+    this.stmtCompiler = stmtCompiler;
+  }
+
+  /**
+   * Set handler context for signal handler compilation
+   */
+  setHandlerContext(frequency, paramName) {
+    this.currentFrequency = frequency;
+    this.currentParamName = paramName;
+    // Reset local variables for new handler
+    this.tempVars.clear();
+    this.tempVarTypes.clear();
+    this.stackOffset = 0;
+    this.stackFrameOffset = 0;
+  }
+
+  /**
+   * Set stack frame offset (for saved registers in function prologue)
+   */
+  setStackFrameOffset(offset) {
+    this.stackFrameOffset = offset;
+  }
+
+  /**
+   * Generate a unique label
+   */
+  genLabel(prefix) {
+    return `${prefix}_${this.labelCounter.count++}`;
+  }
+
+  /**
+   * Compile an expression and return assembly code
+   * Result is left in rax
+   */
+  compile(expr) {
+    const lines = [];
 
     switch (expr.type) {
       case 'literal':
-        return this.compileLiteral(expr, context);
+        lines.push(...this.compileLiteral(expr));
+        break;
 
       case 'variable':
-        return this.compileVariable(expr, context);
+        lines.push(...this.compileVariable(expr));
+        break;
 
-      case 'field-access':
       case 'state-access':
-        return this.compileFieldAccess(expr, context);
-
-      case 'binary-op':
-        return this.compileBinaryOp(expr, context);
+      case 'field-access':
+        lines.push(...this.compileFieldAccess(expr));
+        break;
 
       case 'binary':
-        // Parser generates 'binary' type with 'op' field
-        return this.compileBinary(expr, context);
+        lines.push(...this.compileBinary(expr));
+        break;
 
-      case 'unary-op':
       case 'unary':
-        return this.compileUnaryOp(expr, context);
+        lines.push(...this.compileUnary(expr));
+        break;
 
       case 'function-call':
-        return this.compileFunctionCall(expr, context);
+        lines.push(...this.compileFunctionCall(expr));
+        break;
 
-      case 'comparison':
-        return this.compileComparison(expr, context);
+      case 'cast':
+      case 'type-cast':
+        lines.push(...this.compileCast(expr));
+        break;
 
-      case 'logical-op':
-        return this.compileLogicalOp(expr, context);
+      case 'struct-literal':
+        lines.push(...this.compileStructLiteral(expr));
+        break;
 
-      case 'array-literal':
-        return this.compileArrayLiteral(expr, context);
+      case 'enum-variant':
+        lines.push(...this.compileEnumVariant(expr));
+        break;
 
       case 'array-access':
-        return this.compileArrayAccess(expr, context);
+        lines.push(...this.compileArrayAccess(expr));
+        break;
 
-      case 'map-literal':
-        return this.compileMapLiteral(expr, context);
+      case 'enum-variant-constructor':
+        lines.push(...this.compileEnumVariantConstructor(expr));
+        break;
 
-      case 'method-call':
-        return this.compileMethodCall(expr, context);
+      case 'if-expression':
+        lines.push(...this.compileIfExpression(expr));
+        break;
 
-      case 'range':
-        // Range is only used as part of other constructs (for loops, slicing)
-        // If we encounter it standalone, it's an error
-        throw new Error('Range expressions are not supported as standalone expressions');
+      case 'array-literal':
+        lines.push(...this.compileArrayLiteral(expr));
+        break;
+
+      case 'tuple-expression':
+        // Tuples are compiled as arrays/vectors
+        lines.push(...this.compileTupleExpression(expr));
+        break;
+
+      case 'match':
+        // Match expression - delegate to statement compiler and get result in rax
+        lines.push(...this.stmtCompiler.compileMatch(expr));
+        break;
 
       default:
         throw new Error(`Unsupported expression type: ${expr.type}`);
     }
+
+    return lines;
   }
 
   /**
-   * Compile literal values (numbers, strings, booleans)
+   * Compile a literal value
    */
-  compileLiteral(expr, context) {
-    const value = expr.value;
+  compileLiteral(expr) {
     const lines = [];
 
-    if (typeof value === 'number') {
+    // Check for null first (before typeof, since typeof null === 'object')
+    if (expr.value === null) {
+      // Null pointer represented as 0
+      lines.push(`    mov rax, 0            # null`);
+    } else if (typeof expr.value === 'number') {
       // Integer or float literal
-      if (Number.isInteger(value)) {
-        lines.push(`    mov rax, ${value}    # literal: ${value}`);
-      } else {
-        // Float: need to load from .rodata
-        const label = this.addFloatLiteral(value);
-        lines.push(`    movsd xmm0, [${label}]    # literal: ${value}`);
-        lines.push(`    # TODO: convert float to integer representation in rax`);
-      }
-    } else if (typeof value === 'string') {
-      // String literal: store address in rax
-      const label = this.addStringLiteral(value);
-      lines.push(`    lea rax, [${label}]    # literal: "${value}"`);
-    } else if (typeof value === 'boolean') {
-      // Boolean: 0 or 1
-      lines.push(`    mov rax, ${value ? 1 : 0}    # literal: ${value}`);
+      lines.push(`    mov rax, ${expr.value}`);
+    } else if (typeof expr.value === 'string') {
+      // String literal - create a .rodata entry
+      const label = this.genLabel('str');
+      this.stringLiterals.push({ label, value: expr.value });
+      console.error(`[DEBUG] ExpressionCompiler: Created string literal "${expr.value}" -> ${label}`);
+      lines.push(`    lea rax, [rip + ${label}]`);
+    } else if (typeof expr.value === 'boolean') {
+      lines.push(`    mov rax, ${expr.value ? 1 : 0}`);
     } else {
-      throw new Error(`Unsupported literal type: ${typeof value}`);
+      throw new Error(`Unsupported literal type: ${typeof expr.value}`);
     }
 
-    return lines.join('\n');
+    return lines;
   }
 
   /**
-   * Compile variable reference
+   * Compile a variable reference
    */
-  compileVariable(expr, context) {
+  compileVariable(expr) {
+    const lines = [];
     const varName = expr.name;
-    const lines = [];
 
-    // Check if it's the signal binding (e.g., 'g' in 'on signal(greeting, g)')
-    if (context.signalBinding === varName) {
-      lines.push(`    mov rax, r13    # ${varName} (signal payload)`);
-      return lines.join('\n');
+    // Debug: Check if varName is null or undefined
+    if (varName === null || varName === undefined) {
+      console.error('[DEBUG] Variable expression with null/undefined name:', JSON.stringify(expr));
+      throw new Error(`Variable expression has null/undefined name. Full expression: ${JSON.stringify(expr)}`);
     }
 
+    // Check if it's the signal parameter (direct reference to payload pointer)
+    if (varName === this.currentParamName && this.currentFrequency) {
+      // Return the signal payload pointer itself (r13)
+      lines.push(`    mov rax, r13          # Load signal parameter pointer`);
+    }
     // Check if it's a local variable
-    if (context.locals && context.locals[varName]) {
-      const offset = context.locals[varName].offset;
-      lines.push(`    mov rax, [rbp - ${offset}]    # ${varName} (local)`);
-      return lines.join('\n');
+    else if (this.tempVars.has(varName)) {
+      const offset = this.tempVars.get(varName) + this.stackFrameOffset;
+      lines.push(`    mov rax, [rbp - ${offset}]`);
+    } else {
+      const err = new Error(`Unknown variable: ${varName}`);
+      console.error('[DEBUG] Stack trace for unknown variable error:');
+      console.error(err.stack);
+      throw err;
     }
 
-    throw new Error(`Unknown variable: ${varName}`);
+    return lines;
   }
 
   /**
-   * Compile field access (e.g., state.counter, g.name)
+   * Compile field access (state.field or msg.field)
    */
-  compileFieldAccess(expr, context) {
+  compileFieldAccess(expr) {
     const lines = [];
-    const object = expr.object;
-    const fieldName = expr.field;
 
-    // Handle state.field (object might be a variable or a string for state-access)
-    const isStateAccess = (object.type === 'variable' && object.name === 'state') ||
-                          (typeof object === 'string' && object === 'state');
+    if (expr.type === 'state-access') {
+      // State field access: state.fieldName
+      const fieldName = expr.field;
+      const fieldOffset = this.symbolTable.getStateFieldOffset(this.agentId, fieldName);
 
-    if (isStateAccess) {
-      const agent = this.symbolTable.agents.get(context.agentId);
-      if (!agent) {
-        throw new Error(`Agent not found: ${context.agentId}`);
+      if (fieldOffset === null) {
+        throw new Error(`Unknown state field: ${fieldName}`);
       }
 
-      // Find field offset in agent state
-      const stateFields = agent.typeDef.state;
-      let offset = 0;
-      let found = false;
+      // r12 holds the agent state base pointer
+      lines.push(`    mov rax, [r12 + ${fieldOffset}]`);
 
-      for (const field of stateFields) {
-        // Determine actual size in state (pointers are 8 bytes)
-        const isPointerType = field.type === 'string' ||
-                              field.type.startsWith('vec<') ||
-                              field.type.startsWith('map<');
-        const actualSize = isPointerType ? 8 : this.symbolTable.getTypeSize(field.type);
+    } else if (expr.type === 'field-access') {
+      // Check if object is a variable or nested field access
+      if (expr.object.type === 'variable') {
+        const objName = expr.object.name;
 
-        // Add alignment padding before this field if needed
-        if (actualSize >= 8 && offset % 8 !== 0) {
-          offset += 8 - (offset % 8); // Align to 8 bytes
-        } else if (actualSize === 4 && offset % 4 !== 0) {
-          offset += 4 - (offset % 4); // Align to 4 bytes
-        } else if (actualSize === 2 && offset % 2 !== 0) {
-          offset += 1; // Align to 2 bytes
-        }
+        if (objName === 'state') {
+          // state.field
+          const fieldOffset = this.symbolTable.getStateFieldOffset(this.agentId, expr.field);
+          if (fieldOffset === null) {
+            console.error(`[DEBUG] Failed state field access: state.${expr.field} in agent ${this.agentId}`);
+            console.error('[DEBUG] Available state fields:', Array.from(this.symbolTable.agents.get(this.agentId)?.state?.keys() || []));
+            console.error('[DEBUG] Full expression:', JSON.stringify(expr));
+            throw new Error(`Unknown state field: ${expr.field}`);
+          }
+          const fieldType = this.symbolTable.getStateFieldType(this.agentId, expr.field);
 
-        if (field.name === fieldName) {
-          found = true;
-          break;
-        }
-        offset += actualSize;
-      }
-
-      if (!found) {
-        throw new Error(`State field not found: ${fieldName}`);
-      }
-
-      lines.push(`    mov rax, [r12 + ${offset}]    # state.${fieldName}`);
-      return lines.join('\n');
-    }
-
-    // Handle variable.field (e.g., g.name for signal payload)
-    if (object.type === 'variable') {
-      // First, get the object pointer
-      const objectCode = this.compile(object, context);
-      lines.push(objectCode);
-
-      // Now rax contains the object pointer
-      // For signal payloads, fields are stored at fixed offsets
-      // We need to look up the frequency definition
-      if (context.signalBinding === object.name && context.signalFrequency) {
-        const freq = this.symbolTable.frequencies.get(context.signalFrequency);
-        if (!freq) {
-          throw new Error(`Frequency not found: ${context.signalFrequency}`);
-        }
-
-        let offset = 0;
-        let found = false;
-
-        for (const field of freq.fields) {
-          // Determine actual size in payload (pointers are 8 bytes)
-          const isPointerType = field.type === 'string' ||
-                                field.type.startsWith('vec<') ||
-                                field.type.startsWith('map<');
-          const actualSize = isPointerType ? 8 : this.symbolTable.getTypeSize(field.type);
-
-          // Add alignment padding before this field if needed
-          if (actualSize >= 8 && offset % 8 !== 0) {
-            offset += 8 - (offset % 8); // Align to 8 bytes
-          } else if (actualSize === 4 && offset % 4 !== 0) {
-            offset += 4 - (offset % 4); // Align to 4 bytes
-          } else if (actualSize === 2 && offset % 2 !== 0) {
-            offset += 1; // Align to 2 bytes
+          // Use appropriate load instruction based on field type
+          if (fieldType === 'u32' || fieldType === 'i32') {
+            lines.push(`    mov eax, [r12 + ${fieldOffset}]  # Load 32-bit state field`);
+          } else if (fieldType === 'u64' || fieldType === 'i64') {
+            lines.push(`    mov rax, [r12 + ${fieldOffset}]  # Load 64-bit state field`);
+          } else if (fieldType === 'u16' || fieldType === 'i16') {
+            lines.push(`    movzx eax, word ptr [r12 + ${fieldOffset}]  # Load 16-bit state field`);
+          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+            lines.push(`    movzx eax, byte ptr [r12 + ${fieldOffset}]  # Load 8-bit state field`);
+          } else {
+            // Default to 64-bit for pointers and other types
+            lines.push(`    mov rax, [r12 + ${fieldOffset}]  # Load state field (pointer/64-bit)`);
           }
 
-          if (field.name === fieldName) {
-            found = true;
-            break;
+        } else if (objName === this.currentParamName && this.currentFrequency) {
+          // Signal parameter field access (d.id, d.payload, etc.)
+          // r13 holds the payload pointer
+          const fieldOffset = this.symbolTable.getFrequencyFieldOffset(this.currentFrequency, expr.field);
+          if (fieldOffset === null) {
+            throw new Error(`Unknown field ${expr.field} in frequency ${this.currentFrequency}`);
           }
-          offset += actualSize;
+          const fieldType = this.symbolTable.getFrequencyFieldType(this.currentFrequency, expr.field);
+          lines.push(`    # Access ${objName}.${expr.field} from ${this.currentFrequency} payload`);
+
+          // Use appropriate load instruction based on field type
+          if (fieldType === 'u32' || fieldType === 'i32') {
+            lines.push(`    mov eax, [r13 + ${fieldOffset}]  # Load 32-bit value`);
+          } else if (fieldType === 'u64' || fieldType === 'i64') {
+            lines.push(`    mov rax, [r13 + ${fieldOffset}]  # Load 64-bit value`);
+          } else if (fieldType === 'u16' || fieldType === 'i16') {
+            lines.push(`    movzx eax, word ptr [r13 + ${fieldOffset}]  # Load 16-bit value`);
+          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+            lines.push(`    movzx eax, byte ptr [r13 + ${fieldOffset}]  # Load 8-bit value`);
+          } else {
+            // Default to 64-bit for pointers and other types
+            lines.push(`    mov rax, [r13 + ${fieldOffset}]  # Load pointer/64-bit value`);
+          }
+        } else if (this.tempVars.has(objName)) {
+          // Local struct variable field access
+          const varType = this.tempVarTypes.get(objName);
+          if (!varType) {
+            console.error(`[DEBUG] Failed field access: ${objName}.${expr.field}`);
+            console.error(`[DEBUG] Available tempVars:`, Array.from(this.tempVars.keys()));
+            console.error(`[DEBUG] Available tempVarTypes:`, Array.from(this.tempVarTypes.entries()));
+            throw new Error(`Cannot access field of untyped variable: ${objName}`);
+          }
+
+          // Get struct type info
+          const structInfo = this.symbolTable.types.get(varType);
+          if (!structInfo) {
+            throw new Error(`Unknown struct type: ${varType} for variable ${objName}`);
+          }
+
+          if (structInfo.kind !== 'struct') {
+            throw new Error(`Cannot access field of non-struct type: ${varType}`);
+          }
+
+          // Find field in struct
+          const field = structInfo.fields.find(f => f.name === expr.field);
+          if (!field) {
+            throw new Error(`Unknown field ${expr.field} in struct ${varType}`);
+          }
+
+          lines.push(`    # Access ${objName}.${expr.field} (local struct variable)`);
+
+          // Load struct pointer from stack
+          const varOffset = this.tempVars.get(objName) + this.stackFrameOffset;
+          lines.push(`    mov rax, [rbp - ${varOffset}]  # Load struct pointer`);
+
+          // Load field from struct
+          const fieldOffset = field.offset;
+          const fieldType = field.type;
+
+          if (fieldType === 'u32' || fieldType === 'i32') {
+            lines.push(`    mov eax, [rax + ${fieldOffset}]  # Load 32-bit field`);
+          } else if (fieldType === 'u16' || fieldType === 'i16') {
+            lines.push(`    movzx eax, word ptr [rax + ${fieldOffset}]  # Load 16-bit field`);
+          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+            lines.push(`    movzx eax, byte ptr [rax + ${fieldOffset}]  # Load 8-bit field`);
+          } else {
+            // Default to 64-bit for pointers and i64/u64
+            lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
+          }
+        } else {
+          // Unknown variable field access
+          console.error(`[DEBUG] Unknown variable ${objName} in field access`);
+          console.error(`[DEBUG] tempVars.has('${objName}'):`, this.tempVars.has(objName));
+          console.error(`[DEBUG] tempVars keys:`, Array.from(this.tempVars.keys()));
+          console.error(`[DEBUG] currentParamName:`, this.currentParamName);
+          console.error(`[DEBUG] currentFrequency:`, this.currentFrequency);
+          throw new Error(`Unknown variable ${objName} in field access`);
+        }
+      } else {
+        // Nested field access - compile object first, then access field
+        // e.g., tokens[i].field or getToken().field
+        lines.push(`    # Nested field access`);
+
+        // Compile the object expression (returns struct pointer in rax)
+        lines.push(...this.compile(expr.object));
+
+        // Now we need to know the type of the result to access the field
+        // For now, we'll try to infer the type from the object expression
+        let structType = null;
+
+        if (expr.object.type === 'array-access') {
+          // Array access: try to infer element type from the array variable
+          if (expr.object.object.type === 'field-access' &&
+              expr.object.object.object.type === 'variable' &&
+              expr.object.object.object.name === 'state') {
+            // state.fieldname[index] - the field is a vector of structs
+            const stateFieldName = expr.object.object.field;
+            const stateFieldType = this.symbolTable.getStateFieldType(this.agentId, stateFieldName);
+
+            // Extract element type from vec<Type> notation
+            if (stateFieldType && stateFieldType.startsWith('vec<') && stateFieldType.endsWith('>')) {
+              structType = stateFieldType.slice(4, -1);
+            }
+          } else if (expr.object.object.type === 'variable') {
+            // local_var[index] - check if it's a typed local variable
+            const varName = expr.object.object.name;
+            const varType = this.tempVarTypes.get(varName);
+            if (varType && varType.startsWith('vec<') && varType.endsWith('>')) {
+              structType = varType.slice(4, -1);
+            }
+          }
+        } else if (expr.object.type === 'function-call') {
+          // Function call: check if it's a rule with a known return type
+          const ruleName = expr.object.name;
+          if (this.symbolTable.isRule(this.agentId, ruleName)) {
+            const rule = this.symbolTable.getRule(this.agentId, ruleName);
+            if (rule && rule.returnType) {
+              structType = rule.returnType;
+            }
+          }
+        } else if (expr.object.type === 'field-access' &&
+                   expr.object.object.type === 'variable' &&
+                   expr.object.object.name === 'state') {
+          // state.field.subfield - look up state field type
+          const stateFieldName = expr.object.field;
+          structType = this.symbolTable.getStateFieldType(this.agentId, stateFieldName);
+        } else if (expr.object.type === 'variable') {
+          // Simple variable - check if it's a typed local variable
+          const varName = expr.object.name;
+          structType = this.tempVarTypes.get(varName);
         }
 
-        if (!found) {
-          throw new Error(`Field not found in ${context.signalFrequency}: ${fieldName}`);
+        if (!structType) {
+          throw new Error(`Cannot infer type for nested field access: ${JSON.stringify(expr.object)}`);
         }
 
-        lines.push(`    mov rax, [rax + ${offset}]    # ${object.name}.${fieldName}`);
-        return lines.join('\n');
+        // Now we have the struct type, look up the field
+        const structInfo = this.symbolTable.types.get(structType);
+        if (!structInfo) {
+          throw new Error(`Unknown struct type: ${structType}`);
+        }
+
+        if (structInfo.kind !== 'struct') {
+          throw new Error(`Type ${structType} is not a struct`);
+        }
+
+        const field = structInfo.fields.find(f => f.name === expr.field);
+        if (!field) {
+          throw new Error(`Unknown field ${expr.field} in struct ${structType}`);
+        }
+
+        // rax now contains the struct pointer, load the field
+        const fieldOffset = field.offset;
+        const fieldType = field.type;
+
+        if (fieldType === 'u32' || fieldType === 'i32') {
+          lines.push(`    mov eax, [rax + ${fieldOffset}]  # Load 32-bit field`);
+        } else if (fieldType === 'u16' || fieldType === 'i16') {
+          lines.push(`    movzx eax, word ptr [rax + ${fieldOffset}]  # Load 16-bit field`);
+        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+          lines.push(`    movzx eax, byte ptr [rax + ${fieldOffset}]  # Load 8-bit field`);
+        } else {
+          // Default to 64-bit for pointers and i64/u64
+          lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
+        }
       }
     }
 
-    throw new Error(`Unsupported field access: ${JSON.stringify(expr)}`);
+    return lines;
   }
 
   /**
-   * Compile binary operations (+, -, *, /, %)
+   * Compile binary operation
    */
-  compileBinaryOp(expr, context) {
+  compileBinary(expr) {
     const lines = [];
-    const left = expr.left;
-    const right = expr.right;
-    const op = expr.operator;
-
-    // Evaluate left operand -> rax
-    const leftCode = this.compile(left, context);
-    lines.push(leftCode);
-    lines.push(`    push rax    # save left operand`);
-
-    // Evaluate right operand -> rax
-    const rightCode = this.compile(right, context);
-    lines.push(rightCode);
-    lines.push(`    mov rbx, rax    # right operand in rbx`);
-    lines.push(`    pop rax    # restore left operand`);
-
-    // Perform operation
-    switch (op) {
-      case '+':
-        lines.push(`    add rax, rbx    # ${op}`);
-        break;
-      case '-':
-        lines.push(`    sub rax, rbx    # ${op}`);
-        break;
-      case '*':
-        lines.push(`    imul rax, rbx    # ${op}`);
-        break;
-      case '/':
-        lines.push(`    cqo    # sign-extend rax to rdx:rax`);
-        lines.push(`    idiv rbx    # ${op} (quotient in rax)`);
-        break;
-      case '%':
-        lines.push(`    cqo    # sign-extend rax to rdx:rax`);
-        lines.push(`    idiv rbx    # ${op}`);
-        lines.push(`    mov rax, rdx    # remainder in rdx, move to rax`);
-        break;
-      default:
-        throw new Error(`Unsupported binary operator: ${op}`);
-    }
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Compile binary expressions (parser format with 'op' field)
-   * Dispatches to appropriate handler based on operator type
-   */
-  compileBinary(expr, context) {
     const op = expr.op;
 
-    // Determine operator category and delegate
-    if (['+', '-', '*', '/', '%'].includes(op)) {
-      // Arithmetic operators
-      return this.compileBinaryOp({ ...expr, operator: op }, context);
-    } else if (['==', '!=', '<', '>', '<=', '>='].includes(op)) {
-      // Comparison operators
-      return this.compileComparison({ ...expr, operator: op }, context);
-    } else if (['&&', '||'].includes(op)) {
-      // Logical operators
-      return this.compileLogicalOp({ ...expr, operator: op }, context);
+    // Debug: Check for null variables in binary expression
+    function hasNullVar(e) {
+      if (!e) return false;
+      if (e.type === 'variable' && (e.name === null || e.name === undefined)) return true;
+      if (e.left && hasNullVar(e.left)) return true;
+      if (e.right && hasNullVar(e.right)) return true;
+      return false;
+    }
+
+    if (hasNullVar(expr)) {
+      console.error('[DEBUG] Binary expression contains null variable:');
+      console.error('[DEBUG] Full expression:', JSON.stringify(expr, null, 2));
+    }
+
+    // Arithmetic and bitwise operations: +, -, *, /, %, &, |, ^, <<, >>
+    if (['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'].includes(op)) {
+      lines.push(`    # Binary operation: ${op}`);
+
+      // Compile left side, result in rax
+      lines.push(...this.compile(expr.left));
+      lines.push(`    push rax  # Save left side`);
+
+      // Compile right side, result in rax
+      lines.push(...this.compile(expr.right));
+      lines.push(`    mov rbx, rax  # Right side to rbx`);
+      lines.push(`    pop rax  # Restore left side`);
+
+      // Perform operation
+      switch (op) {
+        case '+':
+          lines.push(`    add rax, rbx`);
+          break;
+        case '-':
+          lines.push(`    sub rax, rbx`);
+          break;
+        case '*':
+          lines.push(`    imul rax, rbx`);
+          break;
+        case '/':
+          lines.push(`    xor rdx, rdx  # Clear rdx for division`);
+          lines.push(`    idiv rbx`);
+          break;
+        case '%':
+          lines.push(`    xor rdx, rdx  # Clear rdx for division`);
+          lines.push(`    idiv rbx`);
+          lines.push(`    mov rax, rdx  # Remainder is in rdx`);
+          break;
+        case '&':
+          lines.push(`    and rax, rbx  # Bitwise AND`);
+          break;
+        case '|':
+          lines.push(`    or rax, rbx   # Bitwise OR`);
+          break;
+        case '^':
+          lines.push(`    xor rax, rbx  # Bitwise XOR`);
+          break;
+        case '<<':
+          lines.push(`    mov rcx, rbx  # Shift count to rcx`);
+          lines.push(`    shl rax, cl   # Shift left`);
+          break;
+        case '>>':
+          lines.push(`    mov rcx, rbx  # Shift count to rcx`);
+          lines.push(`    sar rax, cl   # Arithmetic shift right`);
+          break;
+      }
+    }
+    // Comparison operations: ==, !=, <, >, <=, >=
+    else if (['==', '!=', '<', '>', '<=', '>='].includes(op)) {
+      lines.push(`    # Comparison: ${op}`);
+
+      // Compile left side
+      lines.push(...this.compile(expr.left));
+      lines.push(`    push rax`);
+
+      // Compile right side
+      // Debug: Check if right side is a variable with null name
+      if (expr.right.type === 'variable' && (expr.right.name === null || expr.right.name === undefined)) {
+        console.error('[DEBUG] Binary expression with null variable on right side:');
+        console.error('[DEBUG] Full binary expression:', JSON.stringify(expr));
+        console.error('[DEBUG] Operator:', op);
+        console.error('[DEBUG] Left:', JSON.stringify(expr.left));
+        console.error('[DEBUG] Right:', JSON.stringify(expr.right));
+      }
+      lines.push(...this.compile(expr.right));
+      lines.push(`    mov rbx, rax`);
+      lines.push(`    pop rax`);
+
+      // Compare and set result
+      lines.push(`    cmp rax, rbx`);
+
+      const trueLabel = this.genLabel('cmp_true');
+      const endLabel = this.genLabel('cmp_end');
+
+      switch (op) {
+        case '==':
+          lines.push(`    je ${trueLabel}`);
+          break;
+        case '!=':
+          lines.push(`    jne ${trueLabel}`);
+          break;
+        case '<':
+          lines.push(`    jl ${trueLabel}`);
+          break;
+        case '>':
+          lines.push(`    jg ${trueLabel}`);
+          break;
+        case '<=':
+          lines.push(`    jle ${trueLabel}`);
+          break;
+        case '>=':
+          lines.push(`    jge ${trueLabel}`);
+          break;
+      }
+
+      lines.push(`    mov rax, 0  # False`);
+      lines.push(`    jmp ${endLabel}`);
+      lines.push(`${trueLabel}:`);
+      lines.push(`    mov rax, 1  # True`);
+      lines.push(`${endLabel}:`);
+    }
+    // Logical operations: &&, ||
+    else if (['&&', '||'].includes(op)) {
+      lines.push(`    # Logical operation: ${op}`);
+
+      if (op === '&&') {
+        // Short-circuit AND
+        const falseLabel = this.genLabel('and_false');
+        const endLabel = this.genLabel('and_end');
+
+        lines.push(...this.compile(expr.left));
+        lines.push(`    test rax, rax`);
+        lines.push(`    jz ${falseLabel}  # Left is false, skip right`);
+
+        lines.push(...this.compile(expr.right));
+        lines.push(`    test rax, rax`);
+        lines.push(`    jz ${falseLabel}`);
+
+        lines.push(`    mov rax, 1  # Both true`);
+        lines.push(`    jmp ${endLabel}`);
+        lines.push(`${falseLabel}:`);
+        lines.push(`    mov rax, 0  # At least one false`);
+        lines.push(`${endLabel}:`);
+
+      } else { // ||
+        // Short-circuit OR
+        const trueLabel = this.genLabel('or_true');
+        const checkRightLabel = this.genLabel('or_check_right');
+        const endLabel = this.genLabel('or_end');
+
+        lines.push(...this.compile(expr.left));
+        lines.push(`    test rax, rax`);
+        lines.push(`    jz ${checkRightLabel}  # Left is false, check right`);
+        lines.push(`    jmp ${trueLabel}  # Left is true, done`);
+
+        lines.push(`${checkRightLabel}:`);
+        lines.push(...this.compile(expr.right));
+        lines.push(`    test rax, rax`);
+        lines.push(`    jnz ${trueLabel}`);
+
+        lines.push(`    mov rax, 0  # Both false`);
+        lines.push(`    jmp ${endLabel}`);
+        lines.push(`${trueLabel}:`);
+        lines.push(`    mov rax, 1  # At least one true`);
+        lines.push(`${endLabel}:`);
+      }
     } else {
       throw new Error(`Unsupported binary operator: ${op}`);
     }
+
+    return lines;
   }
 
   /**
-   * Compile unary operations (-, !)
+   * Compile unary operation
    */
-  compileUnaryOp(expr, context) {
+  compileUnary(expr) {
     const lines = [];
-    const operand = expr.operand;
-    const op = expr.operator || expr.op;  // Support both 'operator' and 'op' fields
+    const op = expr.op;
 
-    // Evaluate operand -> rax
-    const operandCode = this.compile(operand, context);
-    lines.push(operandCode);
+    lines.push(`    # Unary operation: ${op}`);
+    lines.push(...this.compile(expr.operand));
 
     switch (op) {
       case '-':
-        lines.push(`    neg rax    # unary ${op}`);
+        lines.push(`    neg rax`);
         break;
       case '!':
-        lines.push(`    test rax, rax    # logical NOT`);
-        lines.push(`    sete al    # set if equal to zero`);
-        lines.push(`    movzx rax, al    # zero-extend to 64-bit`);
+        lines.push(`    test rax, rax`);
+        lines.push(`    setz al  # Set al to 1 if rax was 0`);
+        lines.push(`    movzx rax, al  # Zero-extend to 64 bits`);
+        break;
+      case '+':
+        // Unary plus is a no-op
         break;
       default:
         throw new Error(`Unsupported unary operator: ${op}`);
     }
 
-    return lines.join('\n');
+    return lines;
   }
 
   /**
-   * Compile comparison operations (==, !=, <, >, <=, >=)
+   * Compile function call
    */
-  compileComparison(expr, context) {
-    const lines = [];
-    const left = expr.left;
-    const right = expr.right;
-    const op = expr.operator;
-
-    // Evaluate left -> rax
-    const leftCode = this.compile(left, context);
-    lines.push(leftCode);
-    lines.push(`    push rax    # save left`);
-
-    // Evaluate right -> rax
-    const rightCode = this.compile(right, context);
-    lines.push(rightCode);
-    lines.push(`    mov rbx, rax    # right in rbx`);
-    lines.push(`    pop rax    # restore left`);
-
-    // Compare
-    lines.push(`    cmp rax, rbx    # compare`);
-
-    // Set result based on comparison
-    const setInstructions = {
-      '==': 'sete',
-      '!=': 'setne',
-      '<': 'setl',
-      '>': 'setg',
-      '<=': 'setle',
-      '>=': 'setge'
-    };
-
-    const setInstr = setInstructions[op];
-    if (!setInstr) {
-      throw new Error(`Unsupported comparison operator: ${op}`);
-    }
-
-    lines.push(`    ${setInstr} al    # set if ${op}`);
-    lines.push(`    movzx rax, al    # zero-extend to 64-bit`);
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Compile logical operations (&&, ||)
-   */
-  compileLogicalOp(expr, context) {
-    const lines = [];
-    const left = expr.left;
-    const right = expr.right;
-    const op = expr.operator;
-
-    if (op === '&&') {
-      // Short-circuit AND
-      const falseLabel = this.makeLabel('and_false');
-      const endLabel = this.makeLabel('and_end');
-
-      // Evaluate left
-      const leftCode = this.compile(left, context);
-      lines.push(leftCode);
-      lines.push(`    test rax, rax    # check left`);
-      lines.push(`    jz ${falseLabel}    # short-circuit if false`);
-
-      // Evaluate right
-      const rightCode = this.compile(right, context);
-      lines.push(rightCode);
-      lines.push(`    test rax, rax`);
-      lines.push(`    jz ${falseLabel}`);
-
-      // Both true
-      lines.push(`    mov rax, 1`);
-      lines.push(`    jmp ${endLabel}`);
-
-      // False case
-      lines.push(`${falseLabel}:`);
-      lines.push(`    xor rax, rax    # result = 0`);
-
-      lines.push(`${endLabel}:`);
-
-    } else if (op === '||') {
-      // Short-circuit OR
-      const trueLabel = this.makeLabel('or_true');
-      const endLabel = this.makeLabel('or_end');
-
-      // Evaluate left
-      const leftCode = this.compile(left, context);
-      lines.push(leftCode);
-      lines.push(`    test rax, rax`);
-      lines.push(`    jnz ${trueLabel}    # short-circuit if true`);
-
-      // Evaluate right
-      const rightCode = this.compile(right, context);
-      lines.push(rightCode);
-      lines.push(`    test rax, rax`);
-      lines.push(`    jnz ${trueLabel}`);
-
-      // Both false
-      lines.push(`    xor rax, rax    # result = 0`);
-      lines.push(`    jmp ${endLabel}`);
-
-      // True case
-      lines.push(`${trueLabel}:`);
-      lines.push(`    mov rax, 1`);
-
-      lines.push(`${endLabel}:`);
-
-    } else {
-      throw new Error(`Unsupported logical operator: ${op}`);
-    }
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Compile function calls (builtins)
-   */
-  compileFunctionCall(expr, context) {
+  compileFunctionCall(expr) {
     const lines = [];
     const funcName = expr.name;
+
+    lines.push(`    # Function call: ${funcName}`);
+
+    // Compile arguments and push to stack (in reverse order for cdecl)
+    // System V AMD64 calling convention: rdi, rsi, rdx, rcx, r8, r9
+    // Arguments 7+ go on the stack in reverse order
     const args = expr.args || [];
-
-    // Special case: format() for string interpolation
-    if (funcName === 'format') {
-      return this.compileFormat(expr, context);
-    }
-
-    // Special case: len() - needs type-aware dispatch
-    if (funcName === 'len' && args.length === 1) {
-      return this.compileLen(args[0], context);
-    }
-
-    // System V AMD64 calling convention:
-    // Arguments in: rdi, rsi, rdx, rcx, r8, r9
-    // Return value in: rax
     const argRegs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9'];
+    const numRegArgs = Math.min(args.length, 6);
+    const numStackArgs = Math.max(0, args.length - 6);
 
-    if (args.length > 6) {
-      throw new Error(`Too many arguments for function call: ${funcName}`);
+    // First, compile and push stack arguments (args 7+) in reverse order
+    if (numStackArgs > 0) {
+      for (let i = args.length - 1; i >= 6; i--) {
+        lines.push(`    # Stack argument ${i}`);
+        lines.push(...this.compile(args[i]));
+        lines.push(`    push rax`);
+      }
     }
 
-    // Evaluate arguments in reverse order and push to stack
-    for (let i = args.length - 1; i >= 0; i--) {
-      const argCode = this.compile(args[i], context);
-      lines.push(argCode);
-      lines.push(`    push rax    # arg ${i}`);
+    // Save any registers we'll use for register arguments
+    if (numRegArgs > 0) {
+      lines.push(`    push rdi`);
+      lines.push(`    push rsi`);
+      if (numRegArgs > 2) {
+        lines.push(`    push rdx`);
+      }
     }
 
-    // Pop arguments into registers
-    for (let i = 0; i < args.length; i++) {
-      lines.push(`    pop ${argRegs[i]}    # arg ${i}`);
+    // Compile each register argument and move to appropriate register
+    for (let i = 0; i < numRegArgs; i++) {
+      lines.push(`    # Argument ${i}`);
+      lines.push(...this.compile(args[i]));
+      lines.push(`    mov ${argRegs[i]}, rax`);
+
+      // If not the last arg, save it
+      if (i < numRegArgs - 1) {
+        lines.push(`    push ${argRegs[i]}`);
+      }
     }
 
-    // Call builtin function
-    lines.push(`    call builtin_${funcName}    # ${funcName}()`);
-    lines.push(`    # result in rax`);
+    // Restore arguments in correct registers (in reverse order)
+    for (let i = numRegArgs - 2; i >= 0; i--) {
+      lines.push(`    pop ${argRegs[i]}`);
+    }
 
-    return lines.join('\n');
-  }
-
-  /**
-   * Compile len() with type-aware dispatch
-   * Determines if argument is a string or vector and calls the appropriate builtin
-   */
-  compileLen(argExpr, context) {
-    const lines = [];
-
-    // Try to infer the type of the argument
-    let argType = this.inferType(argExpr, context);
-
-    // Compile the argument
-    const argCode = this.compile(argExpr, context);
-    lines.push(argCode);
-    lines.push(`    mov rdi, rax    # argument to len()`);
-
-    // Dispatch to the correct builtin based on type
-    if (argType && argType.startsWith('vec<')) {
-      lines.push(`    call builtin_vec_len    # len() for vector`);
-    } else if (argType === 'string') {
-      lines.push(`    call builtin_string_len    # len() for string`);
+    // Call the function (check if it's a rule or builtin)
+    if (this.symbolTable.isRule(this.agentId, funcName)) {
+      lines.push(`    call rule_${this.agentId}_${funcName}`);
     } else {
-      // Fallback: use string_len (original behavior)
-      lines.push(`    call builtin_string_len    # len() default to string`);
+      lines.push(`    call builtin_${funcName}`);
     }
 
-    return lines.join('\n');
+    // Clean up stack arguments if any
+    if (numStackArgs > 0) {
+      lines.push(`    add rsp, ${numStackArgs * 8}  # Clean up ${numStackArgs} stack arguments`);
+    }
+
+    // Restore saved registers
+    if (numRegArgs > 2) {
+      lines.push(`    pop rdx`);
+    }
+    if (numRegArgs > 0) {
+      lines.push(`    pop rsi`);
+      lines.push(`    pop rdi`);
+    }
+
+    // Result is in rax
+
+    return lines;
   }
 
   /**
-   * Infer the type of an expression
-   * Returns type string like 'string', 'vec<i64>', 'i32', etc.
+   * Compile struct literal
+   * Allocates struct on heap and initializes fields
    */
-  inferType(expr, context) {
-    if (!expr) return null;
-
-    switch (expr.type) {
-      case 'literal':
-        if (typeof expr.value === 'string') return 'string';
-        if (typeof expr.value === 'number') {
-          return Number.isInteger(expr.value) ? 'i64' : 'f64';
-        }
-        if (typeof expr.value === 'boolean') return 'bool';
-        return null;
-
-      case 'array-literal':
-        return 'vec<i64>'; // Default to vec<i64>
-
-      case 'field-access':
-      case 'state-access':
-        // Try to look up field type from frequency or agent state
-        const fieldName = expr.field;
-
-        // Check if this is a signal payload field
-        if (expr.object && expr.object.type === 'variable' && context.signalBinding === expr.object.name) {
-          const freq = this.symbolTable.frequencies.get(context.signalFrequency);
-          if (freq) {
-            const field = freq.fields.find(f => f.name === fieldName);
-            if (field) {
-              return field.type;
-            }
-          }
-        }
-
-        // Check if this is a state field
-        if ((expr.object && expr.object.type === 'variable' && expr.object.name === 'state') ||
-            (typeof expr.object === 'string' && expr.object === 'state')) {
-          const agent = this.symbolTable.agents.get(context.agentId);
-          if (agent && agent.typeDef.state) {
-            const field = agent.typeDef.state.find(f => f.name === fieldName);
-            if (field) {
-              return field.type;
-            }
-          }
-        }
-        return null;
-
-      case 'variable':
-        // Check locals
-        if (context.locals && context.locals[expr.name]) {
-          return context.locals[expr.name].type;
-        }
-        return null;
-
-      case 'array-access':
-        // Infer type of array access (map[key] or vec[index])
-        const objectType = this.inferType(expr.object, context);
-        if (objectType) {
-          // Extract value type from map<K, V> or vec<T>
-          if (objectType.startsWith('map<')) {
-            // Extract value type from map<K, V>
-            const match = objectType.match(/map<[^,]+,\s*(.+)>$/);
-            if (match) {
-              return match[1].trim();
-            }
-          } else if (objectType.startsWith('vec<')) {
-            // Extract element type from vec<T>
-            const match = objectType.match(/vec<(.+)>$/);
-            if (match) {
-              return match[1].trim();
-            }
-          }
-        }
-        return null;
-
-      default:
-        return null;
-    }
-  }
-
-  /**
-   * Compile format() string interpolation
-   */
-  compileFormat(expr, context) {
+  compileStructLiteral(expr) {
     const lines = [];
-    const args = expr.args || [];
+    const structName = expr.structName;
 
-    if (args.length === 0) {
-      throw new Error('format() requires at least one argument');
+    lines.push(`    # Struct literal: ${structName}`);
+
+    // Get struct type info from symbol table
+    const structInfo = this.symbolTable.types.get(structName);
+    if (!structInfo) {
+      throw new Error(`Unknown struct type: ${structName}`);
     }
 
-    // For now, simple implementation:
-    // format("Hello, {}!", name) -> concatenate strings
-    // This is a placeholder - proper implementation needs string builder
-
-    // Evaluate format string
-    const formatCode = this.compile(args[0], context);
-    lines.push(formatCode);
-    lines.push(`    push rax    # format string`);
-
-    // Evaluate remaining arguments
-    for (let i = 1; i < args.length; i++) {
-      const argCode = this.compile(args[i], context);
-      lines.push(argCode);
-      lines.push(`    push rax    # arg ${i}`);
+    if (structInfo.kind !== 'struct') {
+      throw new Error(`Type ${structName} is not a struct`);
     }
 
-    // Call format helper
-    lines.push(`    mov rdi, ${args.length}    # number of args`);
-    lines.push(`    call builtin_format    # format string`);
-    lines.push(`    add rsp, ${args.length * 8}    # clean up stack`);
+    const structSize = structInfo.size;
 
-    return lines.join('\n');
-  }
+    // Allocate memory for the struct
+    lines.push(`    # Allocate ${structSize} bytes for ${structName}`);
+    lines.push(`    push rdi`);
+    lines.push(`    mov rdi, ${structSize}`);
+    lines.push(`    call builtin_heap_alloc`);
+    lines.push(`    pop rdi`);
+    lines.push(`    push rax              # Save struct pointer`);
 
-  /**
-   * Compile array literal: [1, 2, 3]
-   * Creates a vector and pushes all elements
-   */
-  compileArrayLiteral(expr, context) {
-    const lines = [];
-    const elements = expr.elements || [];
+    // Initialize each field
+    for (const field of structInfo.fields) {
+      const fieldName = field.name;
+      const fieldOffset = field.offset;
+      const fieldExpr = expr.fields[fieldName];
 
-    // Create new vector
-    lines.push(`    # array literal with ${elements.length} elements`);
-    lines.push(`    call builtin_vec_new`);
-    lines.push(`    mov rbx, rax    # save vector pointer in rbx`);
+      if (fieldExpr) {
+        lines.push(`    # Field ${fieldName} at offset ${fieldOffset}`);
 
-    // Push each element
-    for (let i = 0; i < elements.length; i++) {
-      // Evaluate element expression
-      const elemCode = this.compile(elements[i], context);
-      lines.push(elemCode);
+        // Compile field value expression
+        lines.push(...this.compile(fieldExpr));
 
-      // Push to vector
-      lines.push(`    mov rsi, rax    # element value`);
-      lines.push(`    mov rdi, rbx    # vector pointer`);
-      lines.push(`    call builtin_vec_push`);
-    }
+        // Store value into struct
+        // Struct pointer is on stack
+        lines.push(`    mov rbx, [rsp]        # Load struct pointer`);
 
-    // Return vector pointer
-    lines.push(`    mov rax, rbx    # return vector pointer`);
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Compile array access: vec[index] or vec[start..end]
-   * Calls vec_get(vec, index) or vec_slice(vec, start, end)
-   */
-  compileArrayAccess(expr, context) {
-    const lines = [];
-    const object = expr.object;
-    const index = expr.index;
-
-    // Check if this is a slice operation (index is a range)
-    if (index.type === 'range') {
-      // Slice: vec[start..end]
-      lines.push(`    # array slice`);
-
-      // Evaluate vector expression
-      const objCode = this.compile(object, context);
-      lines.push(objCode);
-      lines.push(`    mov r14, rax    # save vector pointer`);
-
-      // Evaluate start expression
-      const startCode = this.compile(index.start, context);
-      lines.push(startCode);
-      lines.push(`    mov r15, rax    # save start`);
-
-      // Evaluate end expression
-      const endCode = this.compile(index.end, context);
-      lines.push(endCode);
-
-      // Call vec_slice(vec, start, end)
-      lines.push(`    mov rdx, rax    # end`);
-      lines.push(`    mov rsi, r15    # start`);
-      lines.push(`    mov rdi, r14    # vector pointer`);
-      lines.push(`    call builtin_vec_slice`);
-
-      return lines.join('\n');
-    }
-
-    // Regular index access: vec[index] or map[key]
-    // Determine if object is a map or vector by checking its type
-    let isMap = false;
-
-    // Check if object is a field access (state.field_name)
-    if (object.type === 'field-access') {
-      const baseObject = object.object;  // {type: 'state'} or {type: 'variable', name: 'x'}
-      const fieldName = object.field;     // 'partial_results'
-
-      // Check agent state fields (state can be represented as {type: 'state'} or {type: 'variable', name: 'state'})
-      const isStateAccess = baseObject.type === 'state' || (baseObject.type === 'variable' && baseObject.name === 'state');
-
-      if (isStateAccess && context.agentId) {
-        const agent = this.symbolTable.agents.get(context.agentId);
-        if (agent && agent.typeDef.state) {
-          const field = agent.typeDef.state.find(f => f.name === fieldName);
-          if (field && field.type.startsWith('map<')) {
-            isMap = true;
-          }
+        // Use appropriate store instruction based on field type
+        const fieldType = field.type;
+        if (fieldType === 'u32' || fieldType === 'i32') {
+          lines.push(`    mov [rbx + ${fieldOffset}], eax  # Store 32-bit field`);
+        } else if (fieldType === 'u16' || fieldType === 'i16') {
+          lines.push(`    mov [rbx + ${fieldOffset}], ax   # Store 16-bit field`);
+        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+          lines.push(`    mov [rbx + ${fieldOffset}], al   # Store 8-bit field`);
+        } else {
+          // Default to 64-bit for pointers and i64/u64
+          lines.push(`    mov [rbx + ${fieldOffset}], rax  # Store 64-bit field`);
         }
       }
     }
 
-    // Evaluate object expression
-    const objCode = this.compile(object, context);
-    lines.push(objCode);
-    lines.push(`    mov r14, rax    # save ${isMap ? 'map' : 'vector'} pointer in r14`);
+    // Return pointer to struct in rax
+    lines.push(`    pop rax               # Return struct pointer`);
 
-    // Evaluate index expression
-    const idxCode = this.compile(index, context);
-    lines.push(idxCode);
-
-    // Call appropriate get function based on type
-    if (isMap) {
-      lines.push(`    mov rsi, rax    # key`);
-      lines.push(`    mov rdi, r14    # map pointer`);
-      lines.push(`    call builtin_map_get`);
-    } else {
-      lines.push(`    mov rsi, rax    # index`);
-      lines.push(`    mov rdi, r14    # vector pointer`);
-      lines.push(`    call builtin_vec_get`);
-    }
-
-    return lines.join('\n');
+    return lines;
   }
 
   /**
-   * Compile map literal: {}
-   * For now, only supports empty map literals
+   * Compile enum variant reference (EnumType::Variant)
+   * Enum variants are represented as integer ordinals
    */
-  compileMapLiteral(expr, context) {
+  compileEnumVariant(expr) {
     const lines = [];
-    const entries = expr.entries || [];
+    const enumType = expr.enumType;
+    const variantName = expr.variant;
 
-    if (entries.length > 0) {
-      throw new Error('Map literals with entries not yet supported');
+    lines.push(`    # Enum variant: ${enumType}::${variantName}`);
+
+    // Look up enum type in symbol table
+    const enumInfo = this.symbolTable.types.get(enumType);
+    if (!enumInfo) {
+      throw new Error(`Unknown enum type: ${enumType}`);
     }
 
-    // Create new empty map
-    lines.push(`    # map literal (empty)`);
-    lines.push(`    call builtin_map_new`);
-    lines.push(`    # rax now contains map pointer`);
+    if (enumInfo.kind !== 'enum') {
+      throw new Error(`Type ${enumType} is not an enum`);
+    }
 
-    return lines.join('\n');
+    // Look up variant info
+    const variantInfo = enumInfo.variants.get(variantName);
+    if (!variantInfo) {
+      throw new Error(`Unknown variant ${variantName} in enum ${enumType}`);
+    }
+
+    // Load the ordinal value into rax
+    lines.push(`    mov rax, ${variantInfo.ordinal}`);
+
+    return lines;
   }
 
   /**
-   * Compile method call: obj.method(args)
-   * Parser represents this as { type: 'method-call', object: { type: 'field-access', object: obj, field: 'method' }, args }
+   * Compile array/vector access: array[index]
+   * Uses vec_get(vector, index) builtin
    */
-  compileMethodCall(expr, context) {
+  compileArrayAccess(expr) {
     const lines = [];
 
-    // Extract method name and receiver object
-    // expr.object is a field-access where field is the method name
-    if (expr.object.type !== 'field-access') {
-      throw new Error(`Method call object must be field-access, got ${expr.object.type}`);
+    lines.push(`    # Array access: array[index]`);
+
+    // Compile the array/vector expression
+    lines.push(...this.compile(expr.object));
+    lines.push(`    push rax              # Save array pointer`);
+
+    // Compile the index expression
+    lines.push(...this.compile(expr.index));
+
+    // Set up arguments for vec_get(vector, index)
+    lines.push(`    mov rsi, rax          # index in rsi`);
+    lines.push(`    pop rdi               # vector in rdi`);
+
+    // Call vec_get builtin
+    lines.push(`    call builtin_vec_get`);
+
+    // Result is in rax
+
+    return lines;
+  }
+
+  /**
+   * Compile enum variant constructor: EnumType::Variant(args)
+   * For simple enums (no associated data), this just returns the ordinal.
+   * For enums with associated data, this allocates a tagged union.
+   */
+  compileEnumVariantConstructor(expr) {
+    const lines = [];
+    const enumType = expr.enumType;
+    const variantName = expr.variant;
+
+    lines.push(`    # Enum variant constructor: ${enumType}::${variantName}(...)`);
+
+    // Look up enum type in symbol table
+    const enumInfo = this.symbolTable.types.get(enumType);
+    if (!enumInfo) {
+      throw new Error(`Unknown enum type: ${enumType}`);
     }
 
-    const methodName = expr.object.field;
-    const receiver = expr.object.object;
-    const args = expr.args || [];
-
-    lines.push(`    # method call: .${methodName}()`);
-
-    // Compile receiver (the object the method is called on)
-    const receiverCode = this.compile(receiver, context);
-    lines.push(receiverCode);
-    lines.push(`    mov r14, rax    # save receiver in r14`);
-
-    // Compile arguments (evaluate in order, save on stack)
-    const argRegs = ['rsi', 'rdx', 'rcx', 'r8', 'r9'];
-
-    if (args.length > argRegs.length) {
-      throw new Error(`Method calls with more than ${argRegs.length} arguments not yet supported`);
+    if (enumInfo.kind !== 'enum') {
+      throw new Error(`Type ${enumType} is not an enum`);
     }
 
-    // Evaluate arguments and save in r15 (for single arg), or on stack for multiple
-    const savedArgs = [];
-    for (let i = 0; i < args.length; i++) {
-      const argCode = this.compile(args[i], context);
-      lines.push(argCode);
+    // Look up variant info
+    const variantInfo = enumInfo.variants.get(variantName);
+    if (!variantInfo) {
+      throw new Error(`Unknown variant ${variantName} in enum ${enumType}`);
+    }
 
-      if (i === 0 && args.length === 1) {
-        lines.push(`    mov r15, rax    # save arg0`);
+    const ordinal = variantInfo.ordinal;
+    const dataType = variantInfo.dataType;
+
+    // If no data type, just return the ordinal (simple enum)
+    if (!dataType) {
+      lines.push(`    mov rax, ${ordinal}   # Return variant ordinal (no data)`);
+      return lines;
+    }
+
+    // Enum with data - allocate tagged union
+    const unionSize = enumInfo.size;
+
+    lines.push(`    # Allocate tagged union: ${unionSize} bytes`);
+    lines.push(`    push rdi`);
+    lines.push(`    mov rdi, ${unionSize}`);
+    lines.push(`    call builtin_heap_alloc`);
+    lines.push(`    pop rdi`);
+    lines.push(`    push rax              # Save union pointer`);
+    lines.push(``);
+
+    // Store the tag (ordinal)
+    lines.push(`    # Store variant tag`);
+    lines.push(`    mov rbx, [rsp]        # Get union pointer`);
+    lines.push(`    mov qword ptr [rbx], ${ordinal}  # Store tag at offset 0`);
+    lines.push(``);
+
+    // Store the data (if argument provided)
+    if (expr.args && expr.args.length > 0) {
+      lines.push(`    # Store variant data`);
+
+      // Compile the data argument
+      lines.push(...this.compile(expr.args[0]));
+
+      // Store data after tag (at offset 8)
+      lines.push(`    mov rbx, [rsp]        # Get union pointer`);
+
+      // Check data size to use appropriate store instruction
+      const dataSize = variantInfo.dataSize;
+      if (dataSize <= 8) {
+        lines.push(`    mov qword ptr [rbx + 8], rax  # Store data at offset 8`);
       } else {
-        lines.push(`    push rax    # save arg${i}`);
-        savedArgs.push(i);
+        // For larger data (structs), rax should be a pointer
+        lines.push(`    mov qword ptr [rbx + 8], rax  # Store data pointer at offset 8`);
       }
     }
 
-    // Pop arguments into registers (in reverse order)
-    for (let i = savedArgs.length - 1; i >= 0; i--) {
-      lines.push(`    pop ${argRegs[savedArgs[i]]}    # arg${savedArgs[i]}`);
-    }
+    // Return pointer to tagged union
+    lines.push(`    pop rax               # Return union pointer`);
 
-    // First argument goes in rsi (or r15 if it was saved there)
-    if (args.length === 1) {
-      lines.push(`    mov rsi, r15    # arg0`);
-    }
-
-    // Receiver goes in rdi
-    lines.push(`    mov rdi, r14    # receiver`);
-
-    // Map method names to builtin functions
-    const methodMap = {
-      // Map methods
-      'contains_key': 'builtin_map_has',
-      'has': 'builtin_map_has',
-      'get': 'builtin_map_get',
-      'set': 'builtin_map_set',
-      'delete': 'builtin_map_delete',
-      'remove': 'builtin_map_delete',
-
-      // Vector methods
-      'push': 'builtin_vec_push',
-      'pop': 'builtin_vec_pop',
-      'len': 'builtin_vec_len',
-    };
-
-    const builtinName = methodMap[methodName];
-    if (!builtinName) {
-      throw new Error(`Unknown method: ${methodName}`);
-    }
-
-    lines.push(`    call ${builtinName}`);
-    lines.push(`    # rax contains return value`);
-
-    return lines.join('\n');
+    return lines;
   }
 
   /**
-   * Add string literal to .rodata section
+   * Compile if-expression: if condition { thenValue } else { elseValue }
+   * Similar to ternary operator in C: condition ? thenValue : elseValue
    */
-  addStringLiteral(str) {
-    if (this.stringLiterals.has(str)) {
-      return this.stringLiterals.get(str);
+  compileIfExpression(expr) {
+    const lines = [];
+
+    const elseLabel = this.genLabel('if_expr_else');
+    const endLabel = this.genLabel('if_expr_end');
+
+    lines.push(`    # if-expression`);
+
+    // Evaluate condition
+    lines.push(...this.compile(expr.condition));
+
+    // Test and jump
+    lines.push(`    test rax, rax`);
+    lines.push(`    jz ${elseLabel}`);
+
+    // Then value
+    lines.push(`    # then value`);
+    lines.push(...this.compile(expr.thenValue));
+    lines.push(`    jmp ${endLabel}`);
+
+    // Else value
+    lines.push(`${elseLabel}:`);
+    lines.push(`    # else value`);
+    lines.push(...this.compile(expr.elseValue));
+
+    lines.push(`${endLabel}:`);
+
+    return lines;
+  }
+
+  /**
+   * Compile type cast
+   */
+  compileCast(expr) {
+    const lines = [];
+
+    // Compile the expression being cast
+    lines.push(...this.compile(expr.expression));
+
+    // For now, most casts are no-ops in assembly
+    // We might need to handle sign extension for certain cases
+    lines.push(`    # Cast to ${expr.targetType}`);
+
+    const sourceType = this.inferType(expr.expression);
+    const targetType = expr.targetType;
+
+    // Handle specific conversions
+    if (sourceType === 'i32' && targetType === 'i64') {
+      lines.push(`    movsxd rax, eax  # Sign-extend 32-bit to 64-bit`);
+    } else if (sourceType === 'u32' && targetType === 'u64') {
+      lines.push(`    mov eax, eax  # Zero-extend 32-bit to 64-bit`);
+    }
+    // Most other casts are no-ops or truncations
+
+    return lines;
+  }
+
+  /**
+   * Compile array literal expression
+   * Creates a new vector and pushes all elements
+   */
+  compileArrayLiteral(expr) {
+    const lines = [];
+
+    // Call builtin_vec_new to create empty vector
+    lines.push(`    # Array literal: [...]`);
+    lines.push(`    call builtin_vec_new`);
+    lines.push(`    # rax now contains empty vector pointer`);
+
+    // If there are elements, push each one
+    if (expr.elements && expr.elements.length > 0) {
+      // Save vector pointer in r14 (callee-saved register)
+      lines.push(`    mov r14, rax          # Save vector pointer in r14`);
+
+      for (let i = 0; i < expr.elements.length; i++) {
+        const element = expr.elements[i];
+
+        lines.push(`    # Element ${i}`);
+
+        // Compile element expression (result in rax)
+        lines.push(...this.compile(element));
+
+        // Set up arguments for builtin_vec_push(vec, element)
+        lines.push(`    mov rdi, r14          # arg1: vector pointer`);
+        lines.push(`    mov rsi, rax          # arg2: element value`);
+        lines.push(`    call builtin_vec_push`);
+      }
+
+      // Restore vector pointer to rax as final result
+      lines.push(`    mov rax, r14          # Return vector pointer`);
     }
 
-    const label = `.str_${this.stringCounter++}`;
-    this.stringLiterals.set(str, label);
-    return label;
+    return lines;
+  }
+
+  compileTupleExpression(expr) {
+    const lines = [];
+
+    // Tuples are compiled as vectors (same as array literals)
+    // Call builtin_vec_new to create empty vector
+    lines.push(`    # Tuple expression: (...)`);
+    lines.push(`    call builtin_vec_new`);
+    lines.push(`    # rax now contains empty vector pointer`);
+
+    // If there are elements, push each one
+    if (expr.elements && expr.elements.length > 0) {
+      // Save vector pointer in r14 (callee-saved register)
+      lines.push(`    mov r14, rax          # Save vector pointer in r14`);
+
+      for (let i = 0; i < expr.elements.length; i++) {
+        const element = expr.elements[i];
+
+        lines.push(`    # Tuple element ${i}`);
+
+        // Compile element expression (result in rax)
+        lines.push(...this.compile(element));
+
+        // Set up arguments for builtin_vec_push(vec, element)
+        lines.push(`    mov rdi, r14          # arg1: vector pointer`);
+        lines.push(`    mov rsi, rax          # arg2: element value`);
+        lines.push(`    call builtin_vec_push`);
+      }
+
+      // Restore vector pointer to rax as final result
+      lines.push(`    mov rax, r14          # Return vector pointer`);
+    }
+
+    return lines;
   }
 
   /**
-   * Add float literal to .rodata section
+   * Infer the type of an expression (simplified)
    */
-  addFloatLiteral(value) {
-    // TODO: Track float literals
-    return `.float_${Math.abs(value).toString().replace('.', '_')}`;
+  inferType(expr) {
+    if (expr.type === 'literal') {
+      if (typeof expr.value === 'number') {
+        return expr.value >= 0 ? 'i64' : 'i64';
+      }
+      return 'unknown';
+    }
+    // For now, default to i64
+    return 'i64';
   }
 
   /**
-   * Generate unique label
+   * Add a local variable to the scope
    */
-  makeLabel(prefix) {
-    return `.${prefix}_${this.labelCounter++}`;
+  addLocalVar(name, size = 8, typeName = null) {
+    this.stackOffset += size;
+    this.tempVars.set(name, this.stackOffset);
+    if (typeName) {
+      this.tempVarTypes.set(name, typeName);
+    }
+    return this.stackOffset;
   }
 
   /**
-   * Get string literals for .rodata section
+   * Get stack offset for local variable
    */
-  getStringLiterals() {
-    return this.stringLiterals;
+  getLocalVarOffset(name) {
+    return this.tempVars.get(name);
+  }
+
+  /**
+   * Get type of local variable
+   */
+  getLocalVarType(name) {
+    return this.tempVarTypes.get(name);
   }
 }
 

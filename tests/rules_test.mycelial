@@ -1,0 +1,46 @@
+network RulesTest {
+  frequencies {
+    start {}
+
+    output {
+      message: string
+    }
+  }
+
+  hyphae {
+    hyphal calculator {
+      state {
+        base_value: u32 = 10
+      }
+
+      rule add(a: u32, b: u32) -> u32 {
+        return a + b
+      }
+
+      rule multiply(a: u32, b: u32) -> u32 {
+        return a * b
+      }
+
+      rule compute_total(x: u32) -> u32 {
+        let sum = add(x, state.base_value)
+        let result = multiply(sum, 2)
+        return result
+      }
+
+      on signal(start, s) {
+        let result = compute_total(5)
+        emit output { message: format("Result: {}", result) }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn calculator as C1
+
+    socket input -> C1 (frequency: start)
+    socket C1 -> output
+  }
+}

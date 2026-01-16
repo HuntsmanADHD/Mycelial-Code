@@ -1,0 +1,35 @@
+network CharAtTest {
+  frequencies {
+    start {}
+
+    output {
+      message: string
+    }
+  }
+
+  hyphae {
+    hyphal tester {
+      state {
+        text: string = "Hello"
+      }
+
+      on signal(start, s) {
+        let ch0 = char_at(state.text, 0)
+        let ch4 = char_at(state.text, 4)
+        let ch10 = char_at(state.text, 10)
+
+        emit output { message: format("char[0]={} char[4]={} char[10]='{}'", ch0, ch4, ch10) }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn tester as T1
+
+    socket input -> T1 (frequency: start)
+    socket T1 -> output
+  }
+}

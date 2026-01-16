@@ -1,0 +1,51 @@
+network WhileLoopTest {
+  frequencies {
+    start {
+      max: u32
+    }
+
+    output {
+      message: string
+    }
+  }
+
+  hyphae {
+    hyphal counter {
+      state {
+        count: u32 = 0
+        sum: u32 = 0
+      }
+
+      on signal(start, s) {
+        state.count = 0
+        state.sum = 0
+
+        while state.count < s.max {
+          state.count = state.count + 1
+
+          if state.count % 2 == 0 {
+            continue
+          }
+
+          if state.count >= 10 {
+            break
+          }
+
+          state.sum = state.sum + state.count
+        }
+
+        emit output { message: format("Sum: {}", state.sum) }
+      }
+    }
+  }
+
+  topology {
+    fruiting_body input
+    fruiting_body output
+
+    spawn counter as C1
+
+    socket input -> C1 (frequency: start)
+    socket C1 -> output
+  }
+}

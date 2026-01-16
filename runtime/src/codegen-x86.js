@@ -92,7 +92,8 @@ class X86CodeGenerator {
     this.sections = {
       text: [],
       rodata: [],
-      data: []
+      data: [],
+      bss: []
     };
     this.currentSection = 'text';
     this.symbols = new Map();      // symbol -> { section, offset, isGlobal }
@@ -110,7 +111,8 @@ class X86CodeGenerator {
     this.sections = {
       text: [],
       rodata: [],
-      data: []
+      data: [],
+      bss: []
     };
     this.currentSection = 'text';
     this.symbols.clear();
@@ -139,6 +141,7 @@ class X86CodeGenerator {
       code: Buffer.from(this.sections.text),
       rodata: Buffer.from(this.sections.rodata),
       data: Buffer.from(this.sections.data),
+      bss: Buffer.from(this.sections.bss),
       symbols: this.symbols,
       relocations: this.relocations
     };
@@ -161,9 +164,12 @@ class X86CodeGenerator {
 
       // Handle section directives
       if (line.startsWith('.section') || line.startsWith('.text') ||
-          line.startsWith('.data') || line.startsWith('.rodata')) {
+          line.startsWith('.data') || line.startsWith('.rodata') ||
+          line.startsWith('.bss')) {
         const section = this.parseSectionDirective(line);
         this.currentSection = section;
+        // Record section change for pass2
+        instructions.push({ type: 'section', section });
         continue;
       }
 
@@ -204,7 +210,10 @@ class X86CodeGenerator {
     this.currentOffset = 0;
 
     for (const instr of instructions) {
-      if (instr.type === 'label') {
+      if (instr.type === 'section') {
+        // Section directive - update current section
+        this.currentSection = instr.section;
+      } else if (instr.type === 'label') {
         // Standalone label - record with actual section offset
         const section = this.sections[this.currentSection];
         this.labels.set(instr.label, section.length);
@@ -228,6 +237,7 @@ class X86CodeGenerator {
     if (line.startsWith('.text')) return 'text';
     if (line.startsWith('.data')) return 'data';
     if (line.startsWith('.rodata')) return 'rodata';
+    if (line.startsWith('.bss')) return 'bss';
     if (line.startsWith('.section')) {
       const match = line.match(/\.section\s+(\.\w+)/);
       if (match) {
@@ -360,6 +370,7 @@ class X86CodeGenerator {
       const inner = intelMatch[1];
       let base = null, index = null, scale = 1, disp = 0;
       let ripRelative = false;
+      let label = null;
 
       // Parse components
       const parts = inner.split(/([+\-])/);
@@ -400,15 +411,22 @@ class X86CodeGenerator {
           continue;
         }
 
-        // Must be a register
+        // Check if it's a register
         const reg = part.toLowerCase().replace('%', '');
         if (REGISTERS[reg]) {
           if (!base) base = reg;
           else if (!index) index = reg;
+          continue;
+        }
+
+        // If not a register or number, it's a label
+        if (!label) {
+          label = part;
+          ripRelative = true;  // Labels are RIP-relative by default
         }
       }
 
-      return { type: 'mem', base, index, scale, disp, ripRelative };
+      return { type: 'mem', base, index, scale, disp, ripRelative, label };
     }
 
     // Label with optional offset: label(%rip) or symbol
@@ -690,14 +708,38 @@ class X86CodeGenerator {
         this.encodeUnaryArith(section, operands, 6); // DIV
         break;
 
+      case 'incb':
+        this.encodeUnaryArith(section, operands, 0, 8); // INC byte
+        break;
+
+      case 'incw':
+        this.encodeUnaryArith(section, operands, 0, 16); // INC word
+        break;
+
+      case 'incl':
+        this.encodeUnaryArith(section, operands, 0, 32); // INC dword
+        break;
+
       case 'inc':
       case 'incq':
-        this.encodeUnaryArith(section, operands, 0); // INC
+        this.encodeUnaryArith(section, operands, 0, 64); // INC qword
+        break;
+
+      case 'decb':
+        this.encodeUnaryArith(section, operands, 1, 8); // DEC byte
+        break;
+
+      case 'decw':
+        this.encodeUnaryArith(section, operands, 1, 16); // DEC word
+        break;
+
+      case 'decl':
+        this.encodeUnaryArith(section, operands, 1, 32); // DEC dword
         break;
 
       case 'dec':
       case 'decq':
-        this.encodeUnaryArith(section, operands, 1); // DEC
+        this.encodeUnaryArith(section, operands, 1, 64); // DEC qword
         break;
 
       case 'neg':
@@ -976,7 +1018,8 @@ class X86CodeGenerator {
   encodeMov(section, operands, mnemonic) {
     if (operands.length !== 2) return;
 
-    const [src, dst] = operands;
+    // Intel syntax: mov dest, src
+    const [dst, src] = operands;
     const is64 = mnemonic === 'movq' || mnemonic === 'mov';
     const is32 = mnemonic === 'movl';
     const is16 = mnemonic === 'movw';
@@ -984,36 +1027,48 @@ class X86CodeGenerator {
 
     // MOV reg, imm
     if (dst.type === 'reg' && src.type === 'imm') {
-      this.encodeMovRegImm(section, dst, src.value, is64);
+      this.encodeMovRegImm(section, dst, src.value, is64, is8);
       return;
     }
 
     // MOV reg, reg
     if (dst.type === 'reg' && src.type === 'reg') {
-      this.encodeMovRegReg(section, dst, src, is64);
+      this.encodeMovRegReg(section, dst, src, is64, is8);
       return;
     }
 
     // MOV reg, mem
     if (dst.type === 'reg' && src.type === 'mem') {
-      this.encodeMovRegMem(section, dst, src, is64);
+      this.encodeMovRegMem(section, dst, src, is64, is8);
       return;
     }
 
     // MOV mem, reg
     if (dst.type === 'mem' && src.type === 'reg') {
-      this.encodeMovMemReg(section, dst, src, is64);
+      this.encodeMovMemReg(section, dst, src, is64, is8);
       return;
     }
 
     // MOV mem, imm
     if (dst.type === 'mem' && src.type === 'imm') {
-      this.encodeMovMemImm(section, dst, src.value, is64);
+      this.encodeMovMemImm(section, dst, src.value, is64, is8);
       return;
     }
   }
 
-  encodeMovRegImm(section, reg, imm, is64) {
+  encodeMovRegImm(section, reg, imm, is64, is8 = false) {
+    if (is8) {
+      // MOV r8, imm8: B0+rb + imm8 (or REX + B0+rb for r8b-r15b)
+      const needsRex = reg.extended;
+      if (needsRex) {
+        section.push(this.buildRex(false, false, false, true));
+      }
+      section.push(0xB0 + reg.code);
+      section.push(imm & 0xFF);
+      this.currentOffset += (needsRex ? 1 : 0) + 2;
+      return;
+    }
+
     const needsRex = is64 || reg.extended;
     const is64Imm = imm > 0xFFFFFFFF || imm < -2147483648;
 
@@ -1037,29 +1092,34 @@ class X86CodeGenerator {
     }
   }
 
-  encodeMovRegReg(section, dst, src, is64) {
-    const needsRex = is64 || dst.extended || src.extended;
+  encodeMovRegReg(section, dst, src, is64, is8 = false) {
+    const needsRex = (is64 && !is8) || dst.extended || src.extended;
+    const opcode = is8 ? 0x88 : 0x89;
 
     if (needsRex) {
-      section.push(this.buildRex(is64, src.extended, false, dst.extended));
+      section.push(this.buildRex(is64 && !is8, src.extended, false, dst.extended));
     }
-    section.push(0x89); // MOV r/m64, r64
+    section.push(opcode); // MOV r/m, r
     section.push(this.buildModRM(3, src.code, dst.code));
     this.currentOffset += (needsRex ? 1 : 0) + 2;
   }
 
-  encodeMovRegMem(section, dst, src, is64) {
+  encodeMovRegMem(section, dst, src, is64, is8 = false) {
     // MOV r64, r/m64: REX.W + 8B /r
-    const memEncoding = this.encodeMemoryOperand(src, dst.code, dst.extended, is64);
+    // MOV r8, r/m8: 8A /r (or REX + 8A /r for r8b-r15b)
+    const opcode = is8 ? 0x8A : 0x8B;
+    const memEncoding = this.encodeMemoryOperand(src, dst.code, dst.extended, is64 && !is8, opcode);
     for (const byte of memEncoding) {
       section.push(byte);
     }
     this.currentOffset += memEncoding.length;
   }
 
-  encodeMovMemReg(section, dst, src, is64) {
+  encodeMovMemReg(section, dst, src, is64, is8 = false) {
     // MOV r/m64, r64: REX.W + 89 /r
-    const memEncoding = this.encodeMemoryOperand(dst, src.code, src.extended, is64, 0x89);
+    // MOV r/m8, r8: 88 /r (or REX + 88 /r for r8b-r15b)
+    const opcode = is8 ? 0x88 : 0x89;
+    const memEncoding = this.encodeMemoryOperand(dst, src.code, src.extended, is64 && !is8, opcode);
     for (const byte of memEncoding) {
       section.push(byte);
     }
@@ -1111,7 +1171,8 @@ class X86CodeGenerator {
         offset: this.currentOffset + bytes.length,
         label: mem.label,
         size: 4,
-        pcRelative: true
+        pcRelative: true,
+        section: this.currentSection
       });
 
       this.pushInt32(bytes, 0);
@@ -1247,7 +1308,8 @@ class X86CodeGenerator {
   encodeLea(section, operands) {
     if (operands.length !== 2) return;
 
-    const [src, dst] = operands;
+    // Intel syntax: lea dest, src
+    const [dst, src] = operands;
     if (dst.type !== 'reg' || src.type !== 'mem') return;
 
     // LEA r64, m: REX.W + 8D /r
@@ -1426,19 +1488,37 @@ class X86CodeGenerator {
   /**
    * Encode unary arithmetic (INC, DEC, NEG, NOT, IDIV, DIV)
    */
-  encodeUnaryArith(section, operands, opExt) {
+  encodeUnaryArith(section, operands, opExt, size = 64) {
     if (operands.length !== 1) return;
 
     const op = operands[0];
-    const is64 = op.type === 'reg' && op.size === 64;
-    const needsRex = is64 || (op.type === 'reg' && op.extended);
+    const is8 = size === 8;
+    const is16 = size === 16;
+    const is64 = size === 64;
+    const needsRex = (is64 && !is8) || (op.type === 'reg' && op.extended);
+
+    // Add 0x66 prefix for 16-bit operations
+    if (is16) {
+      section.push(0x66);
+    }
 
     if (needsRex) {
-      section.push(this.buildRex(is64, false, false, op.type === 'reg' && op.extended));
+      section.push(this.buildRex(is64 && !is8, false, false, op.type === 'reg' && op.extended));
     }
-    section.push(0xF7);
+
+    // Choose opcode based on operation and size
+    let opcode;
+    if (opExt <= 1) {
+      // INC (0) or DEC (1): use 0xFE for byte, 0xFF for others
+      opcode = is8 ? 0xFE : 0xFF;
+    } else {
+      // NOT, NEG, MUL, IMUL, DIV, IDIV: use 0xF6 for byte, 0xF7 for others
+      opcode = is8 ? 0xF6 : 0xF7;
+    }
+
+    section.push(opcode);
     section.push(this.buildModRM(3, opExt, op.type === 'reg' ? op.code : 0));
-    this.currentOffset += (needsRex ? 1 : 0) + 2;
+    this.currentOffset += (is16 ? 1 : 0) + (needsRex ? 1 : 0) + 2;
   }
 
   /**
@@ -1555,7 +1635,8 @@ class X86CodeGenerator {
         offset: section.length,
         label: op.name,
         size: 4,
-        pcRelative: true
+        pcRelative: true,
+        section: this.currentSection
       });
       this.pushInt32(section, 0);
       this.currentOffset += 5;
@@ -1587,7 +1668,8 @@ class X86CodeGenerator {
         offset: section.length,
         label: op.name,
         size: 4,
-        pcRelative: true
+        pcRelative: true,
+        section: this.currentSection
       });
       this.pushInt32(section, 0);
       this.currentOffset += 6;
@@ -1609,7 +1691,8 @@ class X86CodeGenerator {
         offset: section.length,
         label: op.name,
         size: 4,
-        pcRelative: true
+        pcRelative: true,
+        section: this.currentSection
       });
       this.pushInt32(section, 0);
       this.currentOffset += 5;
@@ -1630,20 +1713,38 @@ class X86CodeGenerator {
    */
   resolvePendingLabels() {
     for (const pending of this.pending) {
-      if (!this.labels.has(pending.label)) {
+      const sourceSection = pending.section || 'text';
+
+      // Check if label exists in symbols table
+      if (!this.symbols.has(pending.label)) {
         // External symbol - add relocation
         this.relocations.push({
-          section: 'text',
+          section: sourceSection,
           offset: pending.offset,
           symbol: pending.label,
           type: pending.pcRelative ? 'R_X86_64_PC32' : 'R_X86_64_32',
-          addend: pending.pcRelative ? -4 : 0
+          addend: 0
         });
         continue;
       }
 
+      const targetSymbol = this.symbols.get(pending.label);
+
+      // Check if cross-section reference - needs relocation
+      if (targetSymbol.section !== sourceSection) {
+        this.relocations.push({
+          section: sourceSection,
+          offset: pending.offset,
+          symbol: pending.label,
+          type: pending.pcRelative ? 'R_X86_64_PC32' : 'R_X86_64_32',
+          addend: 0
+        });
+        continue;
+      }
+
+      // Same section - can resolve directly
       const targetOffset = this.labels.get(pending.label);
-      const section = this.sections.text;
+      const section = this.sections[sourceSection];
 
       if (pending.pcRelative) {
         // PC-relative: target - (instruction end)
