@@ -1,0 +1,36 @@
+# Makefile for Mycelial Minimal Builtin Runtime
+#
+# Compiles the 10 core builtins needed for the bootstrap compiler.
+# No fat. Built different.
+
+CC = gcc
+CFLAGS = -O2 -Wall -Wextra -fPIC -std=c11
+
+# Target: minimal-builtins.o
+all: minimal-builtins.o
+
+minimal-builtins.o: minimal-builtins.c minimal-builtins.h
+	$(CC) $(CFLAGS) -c minimal-builtins.c -o minimal-builtins.o
+	@echo "✅ Built minimal-builtins.o"
+	@echo "   Ready to link with bootstrap compiler!"
+
+# Clean
+clean:
+	rm -f minimal-builtins.o
+	@echo "🧹 Cleaned build artifacts"
+
+# Info
+info:
+	@echo "🍄 Mycelial Minimal Builtin Runtime"
+	@echo ""
+	@echo "This provides 10 core functions:"
+	@echo "  Vector ops: vec_new, vec_push, vec_len, vec_get, vec_set"
+	@echo "  String ops: string_len, char_at, format"
+	@echo "  I/O ops:    write_file, chmod"
+	@echo ""
+	@echo "Usage:"
+	@echo "  make              - Build minimal-builtins.o"
+	@echo "  make clean        - Remove build artifacts"
+	@echo "  make info         - Show this message"
+
+.PHONY: all clean info

@@ -1,0 +1,40 @@
+# Makefile for Mycelial Complete Builtin Runtime
+#
+# Compiles ALL ~30 builtins needed for the full bootstrap compiler.
+# Built different.
+
+CC = gcc
+CFLAGS = -O2 -Wall -Wextra -fPIC -std=c11
+
+# Target: complete-builtins.o
+all: complete-builtins.o
+
+complete-builtins.o: complete-builtins.c complete-builtins.h
+	$(CC) $(CFLAGS) -c complete-builtins.c -o complete-builtins.o
+	@echo "✅ Built complete-builtins.o"
+	@echo "   30+ builtins ready for Gen1!"
+
+# Clean
+clean:
+	rm -f complete-builtins.o
+	@echo "🧹 Cleaned build artifacts"
+
+# Info
+info:
+	@echo "🍄 Mycelial Complete Builtin Runtime"
+	@echo ""
+	@echo "This provides 30+ functions:"
+	@echo "  Vector ops (5):  vec_new, vec_push, vec_len, vec_get, vec_set"
+	@echo "  Map ops (6):     map_new, map_set, map_get, map_has, map_keys, map_len"
+	@echo "  String ops (13): len, slice, trim, lower, upper, concat, starts_with,"
+	@echo "                   ends_with, contains, index_of, split, char_at, format"
+	@echo "  Parsing (4):     parse_u8, parse_u32, parse_i32, parse_hex"
+	@echo "  I/O (2):         write_file, chmod"
+	@echo "  Helpers (2):     print, exit"
+	@echo ""
+	@echo "Usage:"
+	@echo "  make              - Build complete-builtins.o"
+	@echo "  make clean        - Remove build artifacts"
+	@echo "  make info         - Show this message"
+
+.PHONY: all clean info
