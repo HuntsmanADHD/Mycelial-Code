@@ -25,7 +25,8 @@ class StatementCompiler {
     // Function context (for return statements)
     this.currentFunctionName = null;  // e.g., "handler_C_rest" or "rule_C_add"
     // Loop context (for break/continue)
-    this.loopStack = [];  // Stack of {breakLabel, continueLabel} for nested loops
+    // Each entry: {breakLabel, continueLabel, stackCleanup} where stackCleanup is bytes to add to rsp
+    this.loopStack = [];
   }
 
   /**
@@ -162,7 +163,50 @@ class StatementCompiler {
         throw new Error(`Unknown state field: ${fieldName}`);
       }
 
-      lines.push(`    mov [r12 + ${fieldOffset}], rax`);
+      // Get field type to determine correct mov instruction size
+      const agent = this.symbolTable.agents.get(this.agentId);
+      const field = agent?.stateFields?.find(f => f.name === fieldName);
+      const fieldType = field?.type;
+
+      // Check if the field type is an inline struct (not a pointer type)
+      const typeInfo = this.symbolTable.types.get(fieldType);
+      if (typeInfo && typeInfo.kind === 'struct') {
+        // Inline struct - copy contents from heap-allocated struct to state memory
+        // rax contains pointer to heap-allocated struct
+        lines.push(`    # Copy inline struct ${fieldType} to state.${fieldName}`);
+        lines.push(`    mov rbx, rax          # Source struct pointer`);
+        lines.push(`    lea rcx, [r12 + ${fieldOffset}]  # Destination in state`);
+
+        // Copy each 8-byte chunk of the struct
+        const structSize = typeInfo.size;
+        for (let offset = 0; offset < structSize; offset += 8) {
+          lines.push(`    mov rax, [rbx + ${offset}]`);
+          lines.push(`    mov [rcx + ${offset}], rax`);
+        }
+      } else {
+        // Determine mov instruction based on type size
+        let movInstr = 'mov';
+        let reg = 'rax';
+
+        if (typeof fieldType === 'string') {
+          if (fieldType === 'u8' || fieldType === 'i8') {
+            movInstr = 'mov byte ptr';
+            reg = 'al';
+          } else if (fieldType === 'u32' || fieldType === 'i32') {
+            movInstr = 'mov dword ptr';
+            reg = 'eax';
+          } else if (fieldType === 'u16' || fieldType === 'i16') {
+            movInstr = 'mov word ptr';
+            reg = 'ax';
+          }
+          // For u64, i64, strings, pointers, vec<>, map<> - use default 64-bit mov
+        } else if (fieldType?.base === 'boolean') {
+          // Booleans currently stored as 8 bytes for simplicity
+          // Could optimize to: movInstr = 'mov byte ptr'; reg = 'al';
+        }
+
+        lines.push(`    ${movInstr} [r12 + ${fieldOffset}], ${reg}`);
+      }
 
     } else if (stmt.target.type === 'variable') {
       // Local variable assignment
@@ -199,26 +243,67 @@ class StatementCompiler {
       lines.push(`    mov [rbx], rax        # Store to field`);
 
     } else if (stmt.target.type === 'array-access') {
-      // Array element assignment: arr[index] = value
+      // Array/Map element assignment: arr[index] = value or map[key] = value
+      // Determine if this is a vector or map by checking the object's type
+      const objectExpr = stmt.target.object;
+      let isMap = false;
+
+      // Check if object is a state field
+      if (objectExpr.type === 'state-access') {
+        // state.field[index] - check the state field type
+        const fieldName = objectExpr.field;
+        const agent = this.symbolTable.agents.get(this.agentId);
+        if (agent && agent.stateFields) {
+          const field = agent.stateFields.find(f => f.name === fieldName);
+          if (field && field.type) {
+            // Handle both string types ("map<K,V>") and object types ({generic: "map"})
+            if (typeof field.type === 'string') {
+              isMap = field.type.startsWith('map<') || field.type === 'map';
+            } else if (field.type.generic) {
+              isMap = field.type.generic === 'map';
+            }
+          }
+        }
+      } else if (objectExpr.type === 'field-access' &&
+                 objectExpr.object && objectExpr.object.name === 'state') {
+        // Alternative syntax: check if it's state.field
+        const fieldName = objectExpr.field;
+        const agent = this.symbolTable.agents.get(this.agentId);
+        if (agent && agent.stateFields) {
+          const field = agent.stateFields.find(f => f.name === fieldName);
+          if (field && field.type) {
+            if (typeof field.type === 'string') {
+              isMap = field.type.startsWith('map<') || field.type === 'map';
+            } else if (field.type.generic) {
+              isMap = field.type.generic === 'map';
+            }
+          }
+        }
+      }
+
       // Save value to assign
       lines.push(`    push rax              # Save value to assign`);
 
-      // Compile array expression
-      lines.push(`    # Evaluate array`);
+      // Compile array/map expression
+      lines.push(`    # Evaluate ${isMap ? 'map' : 'array'}`);
       lines.push(...this.exprCompiler.compile(stmt.target.object));
-      lines.push(`    push rax              # Save array pointer`);
+      lines.push(`    push rax              # Save ${isMap ? 'map' : 'array'} pointer`);
 
-      // Compile index expression
-      lines.push(`    # Evaluate index`);
+      // Compile index/key expression
+      lines.push(`    # Evaluate ${isMap ? 'key' : 'index'}`);
       lines.push(...this.exprCompiler.compile(stmt.target.index));
-      lines.push(`    mov rsi, rax          # index in rsi`);
+      lines.push(`    mov rsi, rax          # ${isMap ? 'key' : 'index'} in rsi`);
 
-      // Restore array and value
-      lines.push(`    pop rdi               # array in rdi`);
+      // Restore array/map and value
+      lines.push(`    pop rdi               # ${isMap ? 'map' : 'array'} in rdi`);
       lines.push(`    pop rdx               # value in rdx`);
 
-      // Call builtin_vec_set(array, index, value)
-      lines.push(`    call builtin_vec_set`);
+      // Call appropriate builtin
+      if (isMap) {
+        lines.push(`    call builtin_map_set  # map_set(map, key, value)`);
+      } else {
+        lines.push(`    call builtin_vec_set  # vec_set(vec, index, value)`);
+      }
 
     } else {
       throw new Error(`Unsupported assignment target: ${stmt.target.type}`);
@@ -256,6 +341,18 @@ class StatementCompiler {
           typeName = rule.returnType;
         }
       }
+      // Check for string-returning built-in functions
+      const stringReturningFuncs = [
+        'format', 'string_concat', 'substring', 'to_string',
+        'read_file', 'read_line', 'input', 'string_char_at',
+        'string_trim', 'string_to_lower', 'string_to_upper'
+      ];
+      if (stringReturningFuncs.includes(ruleName)) {
+        typeName = 'string';
+      }
+    } else if (stmt.value.type === 'literal' && typeof stmt.value.value === 'string') {
+      // String literal
+      typeName = 'string';
     }
 
     // Allocate stack space and store the value
@@ -325,8 +422,8 @@ class StatementCompiler {
     lines.push(`    test rax, rax`);
     lines.push(`    jz ${endLabel}`);
 
-    // Push loop context for break/continue
-    this.loopStack.push({ breakLabel: endLabel, continueLabel: loopLabel });
+    // Push loop context for break/continue (while loop has no stack allocation)
+    this.loopStack.push({ breakLabel: endLabel, continueLabel: loopLabel, stackCleanup: 0 });
 
     // Compile loop body
     lines.push(...this.compileBlock(stmt.body));
@@ -384,7 +481,7 @@ class StatementCompiler {
           lines.push(`    mov qword ptr [rbx + ${fieldOffset}], rax  # Write 64-bit field`);
         } else if (fieldType === 'u16' || fieldType === 'i16') {
           lines.push(`    mov word ptr [rbx + ${fieldOffset}], ax   # Write 16-bit field`);
-        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool' || fieldType === 'boolean') {
           lines.push(`    mov byte ptr [rbx + ${fieldOffset}], al   # Write 8-bit field`);
         } else {
           // Default to 64-bit for pointers and other types
@@ -394,9 +491,9 @@ class StatementCompiler {
     }
     lines.push(``);
 
-    // Enqueue signal to all routes matching this frequency
-    lines.push(`    # Enqueue signal to frequency ${stmt.frequency}`);
-    lines.push(`    lea rdi, [signal_queue_${stmt.frequency}]  # Queue address`);
+    // Enqueue signal to per-agent queue (prevents routing loops)
+    lines.push(`    # Enqueue signal to frequency ${stmt.frequency} from ${this.agentId}`);
+    lines.push(`    lea rdi, [signal_queue_${this.agentId}_${stmt.frequency}]  # Queue address`);
     lines.push(`    pop rsi                # Payload pointer`);
     lines.push(`    call queue_enqueue`);
     lines.push(``);
@@ -491,6 +588,18 @@ class StatementCompiler {
     } else {
       // Return void (0)
       lines.push(`    xor rax, rax`);
+    }
+
+    // If inside loops, clean up stack allocations from all enclosing loops
+    // before jumping to the return label
+    if (this.loopStack.length > 0) {
+      let totalCleanup = 0;
+      for (const loop of this.loopStack) {
+        totalCleanup += loop.stackCleanup || 0;
+      }
+      if (totalCleanup > 0) {
+        lines.push(`    add rsp, ${totalCleanup}  # Clean up stack for early return from loop`);
+      }
     }
 
     // Jump to function epilogue
@@ -707,10 +816,61 @@ class StatementCompiler {
           }
         } else if (pattern.type === 'tuple-pattern') {
           // Tuple patterns match against tuple values (compiled as vectors)
-          // For now, we assume the pattern always matches
-          // TODO: Add runtime check for tuple length
+          // Need to check each sub-pattern, especially enum variant tags
           lines.push(`    # Tuple pattern with ${pattern.patterns.length} elements`);
-          lines.push(`    jmp ${bodyLabel}      # Assume match (TODO: add length check)`);
+          lines.push(`    mov r14, rax          # Save tuple vector pointer in r14`);
+
+          let allChecksSimple = true;
+
+          // Check each sub-pattern
+          for (let i = 0; i < pattern.patterns.length; i++) {
+            const subPattern = pattern.patterns[i];
+
+            if (subPattern.type === 'enum-pattern' || subPattern.type === 'enum-variant') {
+              allChecksSimple = false;
+              const enumType = subPattern.enumType;
+              const variantName = subPattern.variant;
+
+              const enumInfo = this.symbolTable.types.get(enumType);
+              if (!enumInfo || enumInfo.kind !== 'enum') {
+                throw new Error(`Unknown enum type: ${enumType}`);
+              }
+
+              const variantInfo = enumInfo.variants.get(variantName);
+              if (!variantInfo) {
+                throw new Error(`Unknown variant ${variantName} in enum ${enumType}`);
+              }
+
+              const ordinal = variantInfo.ordinal;
+              const hasData = !!variantInfo.dataType;
+
+              // Extract element i from tuple
+              lines.push(`    # Check tuple element ${i}: ${enumType}::${variantName}`);
+              lines.push(`    mov rdi, r14          # Tuple vector pointer`);
+              lines.push(`    mov rsi, ${i}         # Element index`);
+              lines.push(`    call builtin_vec_get`);
+
+              if (hasData) {
+                // Tagged union - load and check tag
+                lines.push(`    mov rcx, [rax]        # Load tag from offset 0`);
+                lines.push(`    cmp rcx, ${ordinal}   # Compare with ${variantName} ordinal`);
+                lines.push(`    jne ${nextCheckLabel} # If not matching, try next arm`);
+              } else {
+                // Simple enum - compare value directly
+                lines.push(`    cmp rax, ${ordinal}   # Compare with ${variantName} ordinal`);
+                lines.push(`    jne ${nextCheckLabel} # If not matching, try next arm`);
+              }
+            }
+            // For simple identifier patterns, no runtime check needed
+          }
+
+          // All checks passed, jump to body
+          if (allChecksSimple) {
+            // No enum patterns to check, just match on length (assume ok for now)
+            lines.push(`    jmp ${bodyLabel}      # All sub-patterns are simple, assume match`);
+          } else {
+            lines.push(`    jmp ${bodyLabel}      # All enum variant checks passed`);
+          }
         } else {
           throw new Error(`Unsupported pattern type: ${pattern.type}`);
         }
@@ -931,8 +1091,8 @@ class StatementCompiler {
     const itemOffset = itemVar + this.exprCompiler.stackFrameOffset;
     lines.push(`    mov [rbp - ${itemOffset}], rax  # Store item`);
 
-    // Push loop context for break/continue
-    this.loopStack.push({ breakLabel: endLabel, continueLabel: `${loopLabel}_continue` });
+    // Push loop context for break/continue (for loop allocates 16 bytes: collection + length)
+    this.loopStack.push({ breakLabel: endLabel, continueLabel: `${loopLabel}_continue`, stackCleanup: 16 });
 
     // Compile loop body
     lines.push(...this.compileBlock(stmt.body));
@@ -999,8 +1159,8 @@ class StatementCompiler {
     lines.push(`    cmp rax, rbx`);
     lines.push(`    jge ${endLabel}       # Exit if ${itemName} >= end`);
 
-    // Push loop context for break/continue
-    this.loopStack.push({ breakLabel: endLabel, continueLabel: `${loopLabel}_continue` });
+    // Push loop context for break/continue (for range loop allocates 8 bytes: end value)
+    this.loopStack.push({ breakLabel: endLabel, continueLabel: `${loopLabel}_continue`, stackCleanup: 8 });
 
     // Compile loop body
     lines.push(...this.compileBlock(stmt.body));
@@ -1092,8 +1252,8 @@ class StatementCompiler {
     const valueOffset = valueVar + this.exprCompiler.stackFrameOffset;
     lines.push(`    mov [rbp - ${valueOffset}], rax  # Store value`);
 
-    // Push loop context for break/continue
-    this.loopStack.push({ breakLabel: endLabel, continueLabel: `${loopLabel}_continue` });
+    // Push loop context for break/continue (for-kv loop allocates 24 bytes: length + keys + map)
+    this.loopStack.push({ breakLabel: endLabel, continueLabel: `${loopLabel}_continue`, stackCleanup: 24 });
 
     // Compile loop body
     lines.push(...this.compileBlock(stmt.body));

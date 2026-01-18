@@ -46,6 +46,7 @@ class Runtime {
     this.verbose = options.verbose || false;
     this.maxCycles = options.maxCycles || 1000;
     this.useNativeCodegen = options.useNativeCodegen !== false; // Default to true
+    this.objectOnly = options.objectOnly || false; // New: produce .o instead of executable
 
     // Runtime components
     this.fileIO = new FileIO();
@@ -347,9 +348,15 @@ class Runtime {
       execSync(`as ${asmPath} -o ${objPath}`, { stdio: 'pipe' });
       this.logProgress('CODEGEN', 'Assembly successful');
 
-      // Link with ld
-      execSync(`ld ${objPath} -o ${this.outputPath}`, { stdio: 'pipe' });
-      this.logProgress('CODEGEN', `Linked to ${this.outputPath}`);
+      if (this.objectOnly) {
+        // Object-only mode: just copy .o file to output path
+        fs.copyFileSync(objPath, this.outputPath);
+        this.logProgress('CODEGEN', `Object file written to ${this.outputPath}`);
+      } else {
+        // Full compilation: link with ld to create executable
+        execSync(`ld ${objPath} -o ${this.outputPath}`, { stdio: 'pipe' });
+        this.logProgress('CODEGEN', `Linked to ${this.outputPath}`);
+      }
 
       // Clean up temp files
       fs.unlinkSync(asmPath);

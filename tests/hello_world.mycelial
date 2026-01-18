@@ -1,38 +1,20 @@
-# Hello World in Mycelial
-# The simplest possible program: receive input, emit output.
-
-network HelloWorld {
+# Simple test with assignment
+network test_net {
   frequencies {
-    greeting {
-      name: string
-    }
-
-    response {
-      message: string
+    test_sig {
+      value: u32
     }
   }
-
+  
   hyphae {
-    hyphal greeter {
-      on signal(greeting, g) {
-        emit response {
-          message: format("Hello, {}!", g.name)
-        }
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+      
+      on rest {
+        state.x = 5
       }
     }
   }
-
-  topology {
-    fruiting_body input
-    fruiting_body output
-
-    spawn greeter as G1
-
-    socket input -> G1 (frequency: greeting)
-    socket G1 -> output (frequency: response)
-  }
 }
-
-# USAGE:
-#   Send:    greeting(name="World")
-#   Receive: response(message="Hello, World!")

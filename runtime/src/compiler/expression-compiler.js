@@ -24,6 +24,7 @@ class ExpressionCompiler {
     this.tempVars = new Map(); // local variable name -> stack offset
     this.tempVarTypes = new Map(); // local variable name -> type name
     this.stackOffset = 0; // Current stack offset for locals
+    this.maxStackOffset = 0; // Maximum stack offset reached (for allocation)
     this.stackFrameOffset = 0; // Base offset for stack frame (for saved registers)
     this.stringLiterals = []; // Array of {label, value} for string literals
     // Handler context for signal handlers
@@ -48,6 +49,7 @@ class ExpressionCompiler {
     this.tempVars.clear();
     this.tempVarTypes.clear();
     this.stackOffset = 0;
+    this.maxStackOffset = 0;
     this.stackFrameOffset = 0;
   }
 
@@ -245,11 +247,18 @@ class ExpressionCompiler {
             lines.push(`    mov rax, [r12 + ${fieldOffset}]  # Load 64-bit state field`);
           } else if (fieldType === 'u16' || fieldType === 'i16') {
             lines.push(`    movzx eax, word ptr [r12 + ${fieldOffset}]  # Load 16-bit state field`);
-          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool' || fieldType === 'boolean') {
             lines.push(`    movzx eax, byte ptr [r12 + ${fieldOffset}]  # Load 8-bit state field`);
           } else {
-            // Default to 64-bit for pointers and other types
-            lines.push(`    mov rax, [r12 + ${fieldOffset}]  # Load state field (pointer/64-bit)`);
+            // Check if this is an inline struct type (not a pointer type)
+            const typeInfo = this.symbolTable.types.get(fieldType);
+            if (typeInfo && typeInfo.kind === 'struct') {
+              // Inline struct - get the ADDRESS of the struct, not load its content
+              lines.push(`    lea rax, [r12 + ${fieldOffset}]  # Get address of inline struct state.${expr.field}`);
+            } else {
+              // Pointer type (string, vec, map, etc.) - load the pointer value
+              lines.push(`    mov rax, [r12 + ${fieldOffset}]  # Load state field (pointer/64-bit)`);
+            }
           }
 
         } else if (objName === this.currentParamName && this.currentFrequency) {
@@ -269,11 +278,18 @@ class ExpressionCompiler {
             lines.push(`    mov rax, [r13 + ${fieldOffset}]  # Load 64-bit value`);
           } else if (fieldType === 'u16' || fieldType === 'i16') {
             lines.push(`    movzx eax, word ptr [r13 + ${fieldOffset}]  # Load 16-bit value`);
-          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool' || fieldType === 'boolean') {
             lines.push(`    movzx eax, byte ptr [r13 + ${fieldOffset}]  # Load 8-bit value`);
           } else {
-            // Default to 64-bit for pointers and other types
-            lines.push(`    mov rax, [r13 + ${fieldOffset}]  # Load pointer/64-bit value`);
+            // Check if this is an inline struct type (not a pointer type)
+            const typeInfo = this.symbolTable.types.get(fieldType);
+            if (typeInfo && typeInfo.kind === 'struct') {
+              // Inline struct - get the ADDRESS of the struct
+              lines.push(`    lea rax, [r13 + ${fieldOffset}]  # Get address of inline struct ${objName}.${expr.field}`);
+            } else {
+              // Pointer type - load the pointer value
+              lines.push(`    mov rax, [r13 + ${fieldOffset}]  # Load pointer/64-bit value`);
+            }
           }
         } else if (this.tempVars.has(objName)) {
           // Local struct variable field access
@@ -315,11 +331,18 @@ class ExpressionCompiler {
             lines.push(`    mov eax, [rax + ${fieldOffset}]  # Load 32-bit field`);
           } else if (fieldType === 'u16' || fieldType === 'i16') {
             lines.push(`    movzx eax, word ptr [rax + ${fieldOffset}]  # Load 16-bit field`);
-          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+          } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool' || fieldType === 'boolean') {
             lines.push(`    movzx eax, byte ptr [rax + ${fieldOffset}]  # Load 8-bit field`);
           } else {
-            // Default to 64-bit for pointers and i64/u64
-            lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
+            // Check if this is an inline struct type (not a pointer type)
+            const typeInfo = this.symbolTable.types.get(fieldType);
+            if (typeInfo && typeInfo.kind === 'struct') {
+              // Inline struct - get the ADDRESS of the struct
+              lines.push(`    lea rax, [rax + ${fieldOffset}]  # Get address of inline struct ${objName}.${expr.field}`);
+            } else {
+              // Pointer type - load the pointer value
+              lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
+            }
           }
         } else {
           // Unknown variable field access
@@ -411,11 +434,18 @@ class ExpressionCompiler {
           lines.push(`    mov eax, [rax + ${fieldOffset}]  # Load 32-bit field`);
         } else if (fieldType === 'u16' || fieldType === 'i16') {
           lines.push(`    movzx eax, word ptr [rax + ${fieldOffset}]  # Load 16-bit field`);
-        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool' || fieldType === 'boolean') {
           lines.push(`    movzx eax, byte ptr [rax + ${fieldOffset}]  # Load 8-bit field`);
         } else {
-          // Default to 64-bit for pointers and i64/u64
-          lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
+          // Check if this is an inline struct type (not a pointer type)
+          const typeInfo = this.symbolTable.types.get(fieldType);
+          if (typeInfo && typeInfo.kind === 'struct') {
+            // Inline struct - get the ADDRESS of the struct
+            lines.push(`    lea rax, [rax + ${fieldOffset}]  # Get address of inline struct .${expr.field}`);
+          } else {
+            // Pointer type - load the pointer value
+            lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
+          }
         }
       }
     }
@@ -498,7 +528,24 @@ class ExpressionCompiler {
     }
     // Comparison operations: ==, !=, <, >, <=, >=
     else if (['==', '!=', '<', '>', '<=', '>='].includes(op)) {
-      lines.push(`    # Comparison: ${op}`);
+      // Check if this is a string comparison (either operand is a string type)
+      const leftIsString = this.isStringExpression(expr.left);
+      const rightIsString = this.isStringExpression(expr.right);
+      // Use string comparison for all comparison ops when either operand is a string
+      const useStringCompare = (leftIsString || rightIsString);
+
+      // Debug: Log string comparison detection for variables
+      if (expr.left.type === 'variable' || expr.right.type === 'variable') {
+        console.error(`[DEBUG-CMP] Comparing: ${JSON.stringify(expr.left)} ${op} ${JSON.stringify(expr.right)}`);
+        console.error(`[DEBUG-CMP] leftIsString=${leftIsString}, rightIsString=${rightIsString}, useStringCompare=${useStringCompare}`);
+        console.error(`[DEBUG-CMP] tempVarTypes:`, Array.from(this.tempVarTypes.entries()));
+      }
+
+      if (useStringCompare) {
+        lines.push(`    # String comparison: ${op}`);
+      } else {
+        lines.push(`    # Comparison: ${op}`);
+      }
 
       // Compile left side
       lines.push(...this.compile(expr.left));
@@ -517,31 +564,81 @@ class ExpressionCompiler {
       lines.push(`    mov rbx, rax`);
       lines.push(`    pop rax`);
 
-      // Compare and set result
-      lines.push(`    cmp rax, rbx`);
-
       const trueLabel = this.genLabel('cmp_true');
       const endLabel = this.genLabel('cmp_end');
 
-      switch (op) {
-        case '==':
-          lines.push(`    je ${trueLabel}`);
-          break;
-        case '!=':
-          lines.push(`    jne ${trueLabel}`);
-          break;
-        case '<':
-          lines.push(`    jl ${trueLabel}`);
-          break;
-        case '>':
-          lines.push(`    jg ${trueLabel}`);
-          break;
-        case '<=':
-          lines.push(`    jle ${trueLabel}`);
-          break;
-        case '>=':
-          lines.push(`    jge ${trueLabel}`);
-          break;
+      if (useStringCompare) {
+        // Use string comparison builtins
+        // Need to ensure stack alignment before call
+        lines.push(`    push r15              # Save r15`);
+        lines.push(`    mov r15, rsp          # Save rsp`);
+        lines.push(`    mov rdi, rax          # First string`);
+        lines.push(`    mov rsi, rbx          # Second string`);
+        lines.push(`    and rsp, -16          # Align stack`);
+        lines.push(`    xor eax, eax          # No XMM args`);
+
+        if (op === '==' || op === '!=') {
+          // Use string_eq for equality comparisons
+          lines.push(`    call builtin_string_eq`);
+          lines.push(`    mov rsp, r15          # Restore rsp`);
+          lines.push(`    pop r15               # Restore r15`);
+
+          // builtin_string_eq returns 1 if equal, 0 if not equal
+          if (op === '==') {
+            lines.push(`    test rax, rax`);
+            lines.push(`    jnz ${trueLabel}`);
+          } else { // op === '!='
+            lines.push(`    test rax, rax`);
+            lines.push(`    jz ${trueLabel}`);
+          }
+        } else {
+          // Use string_cmp for ordering comparisons (<, >, <=, >=)
+          lines.push(`    call builtin_string_cmp`);
+          lines.push(`    mov rsp, r15          # Restore rsp`);
+          lines.push(`    pop r15               # Restore r15`);
+
+          // builtin_string_cmp returns <0, 0, or >0 like strcmp
+          // Compare result with 0 to determine true/false
+          lines.push(`    cmp rax, 0`);
+          switch (op) {
+            case '<':
+              lines.push(`    jl ${trueLabel}`);
+              break;
+            case '>':
+              lines.push(`    jg ${trueLabel}`);
+              break;
+            case '<=':
+              lines.push(`    jle ${trueLabel}`);
+              break;
+            case '>=':
+              lines.push(`    jge ${trueLabel}`);
+              break;
+          }
+        }
+      } else {
+        // Integer/pointer comparison
+        lines.push(`    cmp rax, rbx`);
+
+        switch (op) {
+          case '==':
+            lines.push(`    je ${trueLabel}`);
+            break;
+          case '!=':
+            lines.push(`    jne ${trueLabel}`);
+            break;
+          case '<':
+            lines.push(`    jl ${trueLabel}`);
+            break;
+          case '>':
+            lines.push(`    jg ${trueLabel}`);
+            break;
+          case '<=':
+            lines.push(`    jle ${trueLabel}`);
+            break;
+          case '>=':
+            lines.push(`    jge ${trueLabel}`);
+            break;
+        }
       }
 
       lines.push(`    mov rax, 0  # False`);
@@ -640,15 +737,35 @@ class ExpressionCompiler {
 
     lines.push(`    # Function call: ${funcName}`);
 
-    // Compile arguments and push to stack (in reverse order for cdecl)
     // System V AMD64 calling convention: rdi, rsi, rdx, rcx, r8, r9
-    // Arguments 7+ go on the stack in reverse order
-    const args = expr.args || [];
+    // Arguments 7+ go on the stack in reverse order (arg[N-1] pushed first)
+    let args = expr.args || [];
+
+    // vec_from uses NULL as a sentinel - add it as the last argument
+    if (funcName === 'vec_from') {
+      args = [...args, { type: 'literal', value: null }];
+    }
+
     const argRegs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9'];
     const numRegArgs = Math.min(args.length, 6);
     const numStackArgs = Math.max(0, args.length - 6);
 
-    // First, compile and push stack arguments (args 7+) in reverse order
+    // Robust stack alignment approach:
+    // 1. Save r15 (callee-saved) and use it to remember original rsp
+    // 2. Do all pushes and argument compilation
+    // 3. Force align stack with 'and rsp, -16' before call
+    // 4. Restore rsp from r15 after call to undo everything cleanly
+
+    // Step 1: Save r15 and remember current rsp
+    lines.push(`    push r15  # Save callee-saved register`);
+    lines.push(`    mov r15, rsp  # Remember rsp for restoration`);
+
+    // Step 2: Save caller-saved registers we'll clobber
+    lines.push(`    push rdi`);
+    lines.push(`    push rsi`);
+    lines.push(`    push rdx`);
+
+    // Step 3: Compile and push stack arguments (args 6+) in reverse order
     if (numStackArgs > 0) {
       for (let i = args.length - 1; i >= 6; i--) {
         lines.push(`    # Stack argument ${i}`);
@@ -657,52 +774,38 @@ class ExpressionCompiler {
       }
     }
 
-    // Save any registers we'll use for register arguments
-    if (numRegArgs > 0) {
-      lines.push(`    push rdi`);
-      lines.push(`    push rsi`);
-      if (numRegArgs > 2) {
-        lines.push(`    push rdx`);
-      }
-    }
-
-    // Compile each register argument and move to appropriate register
+    // Step 4: Compile register arguments (args 0-5)
+    // We compile each one and save intermediate results on stack
     for (let i = 0; i < numRegArgs; i++) {
       lines.push(`    # Argument ${i}`);
       lines.push(...this.compile(args[i]));
-      lines.push(`    mov ${argRegs[i]}, rax`);
-
-      // If not the last arg, save it
-      if (i < numRegArgs - 1) {
-        lines.push(`    push ${argRegs[i]}`);
-      }
+      lines.push(`    push rax  # Save arg ${i}`);
     }
 
-    // Restore arguments in correct registers (in reverse order)
-    for (let i = numRegArgs - 2; i >= 0; i--) {
+    // Step 5: Pop register arguments into their target registers (in reverse order)
+    for (let i = numRegArgs - 1; i >= 0; i--) {
       lines.push(`    pop ${argRegs[i]}`);
     }
 
-    // Call the function (check if it's a rule or builtin)
+    // Step 6: Force 16-byte alignment before call
+    // System V ABI: rsp must be 16-byte aligned BEFORE call instruction
+    // After call pushes 8-byte return address, rsp will be 8 off - which is correct for function entry
+    lines.push(`    and rsp, -16  # Force 16-byte alignment before call`);
+
+    // Step 7: Call the function
+    // For variadic functions, al must contain the number of XMM registers used
+    lines.push(`    xor eax, eax  # No XMM args for variadic functions`);
     if (this.symbolTable.isRule(this.agentId, funcName)) {
       lines.push(`    call rule_${this.agentId}_${funcName}`);
     } else {
       lines.push(`    call builtin_${funcName}`);
     }
 
-    // Clean up stack arguments if any
-    if (numStackArgs > 0) {
-      lines.push(`    add rsp, ${numStackArgs * 8}  # Clean up ${numStackArgs} stack arguments`);
-    }
+    // Step 8: Restore rsp from r15 (undoes all pushes and alignment)
+    lines.push(`    mov rsp, r15  # Restore rsp`);
 
-    // Restore saved registers
-    if (numRegArgs > 2) {
-      lines.push(`    pop rdx`);
-    }
-    if (numRegArgs > 0) {
-      lines.push(`    pop rsi`);
-      lines.push(`    pop rdi`);
-    }
+    // Step 9: Restore r15
+    lines.push(`    pop r15  # Restore callee-saved register`);
 
     // Result is in rax
 
@@ -761,7 +864,7 @@ class ExpressionCompiler {
           lines.push(`    mov [rbx + ${fieldOffset}], eax  # Store 32-bit field`);
         } else if (fieldType === 'u16' || fieldType === 'i16') {
           lines.push(`    mov [rbx + ${fieldOffset}], ax   # Store 16-bit field`);
-        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool') {
+        } else if (fieldType === 'u8' || fieldType === 'i8' || fieldType === 'bool' || fieldType === 'boolean') {
           lines.push(`    mov [rbx + ${fieldOffset}], al   # Store 8-bit field`);
         } else {
           // Default to 64-bit for pointers and i64/u64
@@ -810,27 +913,68 @@ class ExpressionCompiler {
   }
 
   /**
-   * Compile array/vector access: array[index]
-   * Uses vec_get(vector, index) builtin
+   * Compile array/vector/map access: array[index] or map[key]
+   * Uses vec_get(vector, index) or map_get(map, key) builtin
    */
   compileArrayAccess(expr) {
     const lines = [];
 
-    lines.push(`    # Array access: array[index]`);
+    // Determine if this is a vector or map by checking the object's type
+    const objectExpr = expr.object;
+    let isMap = false;
 
-    // Compile the array/vector expression
+    // Check if object is a state field
+    if (objectExpr.type === 'state-access') {
+      // state.field[index] - check the state field type
+      const fieldName = objectExpr.field;
+      const agent = this.symbolTable.agents.get(this.agentId);
+      if (agent && agent.stateFields) {
+        const field = agent.stateFields.find(f => f.name === fieldName);
+        if (field && field.type) {
+          // Handle both string types ("map<K,V>") and object types ({generic: "map"})
+          if (typeof field.type === 'string') {
+            isMap = field.type.startsWith('map<') || field.type === 'map';
+          } else if (field.type.generic) {
+            isMap = field.type.generic === 'map';
+          }
+        }
+      }
+    } else if (objectExpr.type === 'field-access' &&
+               objectExpr.object && objectExpr.object.name === 'state') {
+      // Alternative syntax: check if it's state.field
+      const fieldName = objectExpr.field;
+      const agent = this.symbolTable.agents.get(this.agentId);
+      if (agent && agent.stateFields) {
+        const field = agent.stateFields.find(f => f.name === fieldName);
+        if (field && field.type) {
+          if (typeof field.type === 'string') {
+            isMap = field.type.startsWith('map<') || field.type === 'map';
+          } else if (field.type.generic) {
+            isMap = field.type.generic === 'map';
+          }
+        }
+      }
+    }
+
+    lines.push(`    # ${isMap ? 'Map' : 'Array'} access: ${isMap ? 'map' : 'array'}[${isMap ? 'key' : 'index'}]`);
+
+    // Compile the array/vector/map expression
     lines.push(...this.compile(expr.object));
-    lines.push(`    push rax              # Save array pointer`);
+    lines.push(`    push rax              # Save ${isMap ? 'map' : 'array'} pointer`);
 
-    // Compile the index expression
+    // Compile the index/key expression
     lines.push(...this.compile(expr.index));
 
-    // Set up arguments for vec_get(vector, index)
-    lines.push(`    mov rsi, rax          # index in rsi`);
-    lines.push(`    pop rdi               # vector in rdi`);
+    // Set up arguments for vec_get or map_get
+    lines.push(`    mov rsi, rax          # ${isMap ? 'key' : 'index'} in rsi`);
+    lines.push(`    pop rdi               # ${isMap ? 'map' : 'vector'} in rdi`);
 
-    // Call vec_get builtin
-    lines.push(`    call builtin_vec_get`);
+    // Call appropriate builtin
+    if (isMap) {
+      lines.push(`    call builtin_map_get  # map_get(map, key) -> value`);
+    } else {
+      lines.push(`    call builtin_vec_get  # vec_get(vec, index) -> value`);
+    }
 
     // Result is in rax
 
@@ -1052,6 +1196,71 @@ class ExpressionCompiler {
   }
 
   /**
+   * Check if an expression evaluates to a string type
+   */
+  isStringExpression(expr) {
+    if (!expr) return false;
+
+    // String literal
+    if (expr.type === 'literal' && typeof expr.value === 'string') {
+      return true;
+    }
+
+    // State field access - check if field type is 'string'
+    if (expr.type === 'state-access') {
+      const fieldType = this.symbolTable.getStateFieldType(this.agentId, expr.field);
+      return fieldType === 'string';
+    }
+
+    // Field access - could be state.field, signal.field, or variable.field
+    if (expr.type === 'field-access') {
+      if (expr.object.type === 'variable') {
+        const objName = expr.object.name;
+
+        if (objName === 'state') {
+          const fieldType = this.symbolTable.getStateFieldType(this.agentId, expr.field);
+          return fieldType === 'string';
+        }
+
+        if (objName === this.currentParamName && this.currentFrequency) {
+          const fieldType = this.symbolTable.getFrequencyFieldType(this.currentFrequency, expr.field);
+          return fieldType === 'string';
+        }
+
+        // Check if objName is a local variable with a struct type that has a string field
+        const varType = this.tempVarTypes.get(objName);
+        if (varType) {
+          const typeInfo = this.symbolTable.types.get(varType);
+          if (typeInfo && typeInfo.kind === 'struct') {
+            const field = typeInfo.fields.find(f => f.name === expr.field);
+            if (field) {
+              return field.type === 'string';
+            }
+          }
+        }
+      }
+    }
+
+    // Local variable - check if type is 'string'
+    if (expr.type === 'variable') {
+      const varType = this.tempVarTypes.get(expr.name);
+      return varType === 'string';
+    }
+
+    // Call expression - check for known string-returning builtins
+    if (expr.type === 'call') {
+      const stringReturningFuncs = [
+        'format', 'string_concat', 'substring', 'to_string',
+        'read_file', 'read_line', 'input'
+      ];
+      const funcName = expr.function?.name || expr.callee?.name || '';
+      return stringReturningFuncs.includes(funcName);
+    }
+
+    return false;
+  }
+
+  /**
    * Infer the type of an expression (simplified)
    */
   inferType(expr) {
@@ -1059,7 +1268,14 @@ class ExpressionCompiler {
       if (typeof expr.value === 'number') {
         return expr.value >= 0 ? 'i64' : 'i64';
       }
+      if (typeof expr.value === 'string') {
+        return 'string';
+      }
       return 'unknown';
+    }
+    // Check if it's a string expression
+    if (this.isStringExpression(expr)) {
+      return 'string';
     }
     // For now, default to i64
     return 'i64';
@@ -1070,6 +1286,10 @@ class ExpressionCompiler {
    */
   addLocalVar(name, size = 8, typeName = null) {
     this.stackOffset += size;
+    // Track maximum stack offset for allocation (handles nested scopes)
+    if (this.stackOffset > this.maxStackOffset) {
+      this.maxStackOffset = this.stackOffset;
+    }
     this.tempVars.set(name, this.stackOffset);
     if (typeName) {
       this.tempVarTypes.set(name, typeName);

@@ -82,7 +82,7 @@ class HandlerCodegen {
     lines.push(``);
 
     // Allocate stack space for local variables if needed
-    const stackSpace = this.stmtCompiler.exprCompiler.stackOffset;
+    const stackSpace = this.stmtCompiler.exprCompiler.maxStackOffset;
     if (stackSpace > 0) {
       // Insert stack allocation after prologue
       const allocLine = `    sub rsp, ${stackSpace}        # Allocate space for local variables`;
@@ -90,14 +90,15 @@ class HandlerCodegen {
       lines.splice(9, 0, ``);
     }
 
+    // Epilogue - return label must come first so early returns jump here
+    lines.push(`.${handlerName}_return:`);
+    lines.push(`    # Epilogue`);
+
     // Deallocate stack space for local variables if needed
     if (stackSpace > 0) {
       lines.push(`    add rsp, ${stackSpace}        # Deallocate local variables`);
     }
 
-    // Epilogue
-    lines.push(`.${handlerName}_return:`);
-    lines.push(`    # Epilogue`);
     lines.push(`    pop r15`);
     lines.push(`    pop r14`);
     lines.push(`    pop r13`);
@@ -179,7 +180,7 @@ class HandlerCodegen {
     lines.push(``);
 
     // Allocate stack space for local variables if needed
-    const stackSpace = this.stmtCompiler.exprCompiler.stackOffset;
+    const stackSpace = this.stmtCompiler.exprCompiler.maxStackOffset;
     if (stackSpace > 0) {
       // Insert stack allocation after prologue
       const allocLine = `    sub rsp, ${stackSpace}        # Allocate space for local variables`;
@@ -187,14 +188,15 @@ class HandlerCodegen {
       lines.splice(10, 0, ``);
     }
 
+    // Epilogue - return label must come first so early returns jump here
+    lines.push(`.${handlerName}_return:`);
+    lines.push(`    # Epilogue`);
+
     // Deallocate stack space for local variables if needed
     if (stackSpace > 0) {
       lines.push(`    add rsp, ${stackSpace}        # Deallocate local variables`);
     }
 
-    // Epilogue
-    lines.push(`.${handlerName}_return:`);
-    lines.push(`    # Epilogue`);
     lines.push(`    pop r15`);
     lines.push(`    pop r14`);
     lines.push(`    pop r13`);
@@ -253,7 +255,7 @@ class HandlerCodegen {
     const bodyLines = this.stmtCompiler.compileBlock(rule.body);
 
     // Now we know the stack space needed
-    const stackSpace = this.stmtCompiler.exprCompiler.stackOffset;
+    const stackSpace = this.stmtCompiler.exprCompiler.maxStackOffset;
 
     // Generate prologue with correct stack allocation
     // Standard prologue: push rbp, set rbp, save callee-saved regs, THEN allocate locals

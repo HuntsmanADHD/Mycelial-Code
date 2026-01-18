@@ -137,17 +137,18 @@ class MycelialCodegen {
     // Store string literals for later use in data section
     this.stringLiterals = deduplicatedLiterals;
 
-    // Add builtin functions
-    this.assembly.push('# ================================================================');
-    this.assembly.push('# Builtin Functions');
-    this.assembly.push('# ================================================================');
-    const builtinGen = new BuiltinFunctionsGenerator();
-    this.assembly.push(builtinGen.generateStringFunctions());
-    this.assembly.push(builtinGen.generateIOFunctions());
-    this.assembly.push(builtinGen.generateMemoryFunctions());
-    this.assembly.push(builtinGen.generateVectorFunctions());
-    this.assembly.push(builtinGen.generateMapFunctions());
-    this.assembly.push(builtinGen.generateUtilityFunctions());
+    // Builtin functions are provided by the C runtime (complete-builtins.o)
+    // Do NOT generate them here - they should be external symbols
+    // this.assembly.push('# ================================================================');
+    // this.assembly.push('# Builtin Functions');
+    // this.assembly.push('# ================================================================');
+    // const builtinGen = new BuiltinFunctionsGenerator();
+    // this.assembly.push(builtinGen.generateStringFunctions());
+    // this.assembly.push(builtinGen.generateIOFunctions());
+    // this.assembly.push(builtinGen.generateMemoryFunctions());
+    // this.assembly.push(builtinGen.generateVectorFunctions());
+    // this.assembly.push(builtinGen.generateMapFunctions());
+    // this.assembly.push(builtinGen.generateUtilityFunctions());
     this.assembly.push('');
   }
 

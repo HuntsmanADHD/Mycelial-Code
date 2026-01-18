@@ -25,7 +25,8 @@ function parseArgs() {
     outputPath: null,
     verbose: false,
     maxCycles: 1000,
-    help: false
+    help: false,
+    objectOnly: false  // New: produce .o file instead of executable
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -39,6 +40,8 @@ function parseArgs() {
       options.outputPath = args[++i];
     } else if (arg === '--max-cycles' || arg === '-m') {
       options.maxCycles = parseInt(args[++i], 10);
+    } else if (arg === '--object-only' || arg === '-c') {
+      options.objectOnly = true;
     } else if (!options.sourcePath) {
       options.sourcePath = arg;
     }
@@ -60,6 +63,7 @@ USAGE:
 
 OPTIONS:
   -o, --output <path>       Output path for ELF binary (default: <source>.elf)
+  -c, --object-only         Produce relocatable object file (.o) instead of executable
   -v, --verbose             Enable verbose logging
   -m, --max-cycles <n>      Maximum tidal cycles (default: 1000)
   -h, --help                Show this help message
@@ -95,9 +99,10 @@ function validateArgs(options) {
   }
 
   if (!options.outputPath) {
-    // Auto-generate output path: replace .mycelial with .elf
+    // Auto-generate output path
     const parsed = path.parse(options.sourcePath);
-    options.outputPath = path.join(parsed.dir, parsed.name + '.elf');
+    const extension = options.objectOnly ? '.o' : '.elf';
+    options.outputPath = path.join(parsed.dir, parsed.name + extension);
   }
 
   return true;
@@ -118,7 +123,8 @@ async function compile(options) {
       sourcePath: options.sourcePath,
       outputPath: options.outputPath,
       verbose: options.verbose,
-      maxCycles: options.maxCycles
+      maxCycles: options.maxCycles,
+      objectOnly: options.objectOnly
     });
 
     // Run compilation

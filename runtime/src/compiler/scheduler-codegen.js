@@ -74,6 +74,28 @@ class SchedulerCodegen {
     lines.push(`    call tidal_cycle_loop    # ACT phase: run until completion`);
     lines.push(`    call exit_program        # Exit cleanly`);
     lines.push(``);
+    lines.push(`    # Parse command-line arguments`);
+    lines.push(`    # Stack layout: [argc][argv[0]][argv[1]]...`);
+    lines.push(`    pop rdi                  # rdi = argc`);
+    lines.push(`    mov rsi, rsp             # rsi = argv`);
+    lines.push(`    call parse_cli_args      # Parse and store args`);
+    lines.push(``);
+    lines.push(`    # Debug: print after CLI parse`);
+    lines.push(`    lea rdi, [cli_parsed_msg]`);
+    lines.push(`    call builtin_println`);
+    lines.push(``);
+    lines.push(`    # Initialize program`);
+    lines.push(`    call init_agents         # REST phase: initialize all agents`);
+    lines.push(`    # Debug: print after init`);
+    lines.push(`    lea rdi, [init_done_msg]`);
+    lines.push(`    call builtin_println`);
+    lines.push(`    call inject_initial      # SENSE phase: inject initial signal(s)`);
+    lines.push(`    # Debug: print before tidal loop`);
+    lines.push(`    lea rdi, [starting_tidal_msg]`);
+    lines.push(`    call builtin_println`);
+    lines.push(`    call tidal_cycle_loop    # ACT phase: run until completion`);
+    lines.push(`    call exit_program        # Exit cleanly`);
+    lines.push(``);
 
     return lines;
   }
@@ -103,6 +125,39 @@ class SchedulerCodegen {
 
     // Queue pointers are already initialized to 0 in .data section
     // No need to initialize them here with the simplified queue implementation
+    lines.push(``);
+
+    // Pre-initialize vector and map fields for each agent
+    lines.push(`    # Pre-initialize vector and map fields`);
+    for (const [agentId, agent] of this.symbolTable.agents.entries()) {
+      const stateOffset = this.symbolTable.getAgentStateOffset(agentId);
+      const stateFields = agent.stateFields || [];
+
+      for (const field of stateFields) {
+        // Check if field type is a vector or map
+        const fieldType = field.type;
+        let initFunction = null;
+
+        if (typeof fieldType === 'string') {
+          if (fieldType.startsWith('vec<') || fieldType === 'vec') {
+            initFunction = 'builtin_vec_new';
+          } else if (fieldType.startsWith('map<') || fieldType === 'map') {
+            initFunction = 'builtin_map_new';
+          }
+        } else if (fieldType && fieldType.generic === 'vec') {
+          initFunction = 'builtin_vec_new';
+        } else if (fieldType && fieldType.generic === 'map') {
+          initFunction = 'builtin_map_new';
+        }
+
+        if (initFunction) {
+          lines.push(`    # Initialize ${agentId}.${field.name} (${fieldType})`);
+          lines.push(`    call ${initFunction}`);
+          lines.push(`    lea rbx, [agent_state_base + ${stateOffset + field.offset}]`);
+          lines.push(`    mov [rbx], rax       # Store pointer at offset ${field.offset}`);
+        }
+      }
+    }
     lines.push(``);
 
     // Call REST handler for each agent
@@ -180,9 +235,9 @@ class SchedulerCodegen {
           }
           lines.push(``);
 
-          // Enqueue signal
-          lines.push(`    # Enqueue signal to ${frequency} queue`);
-          lines.push(`    lea rdi, [signal_queue_${frequency}]`);
+          // Enqueue signal to per-source queue
+          lines.push(`    # Enqueue signal to ${fbName} -> ${target} (${frequency}) queue`);
+          lines.push(`    lea rdi, [signal_queue_${fbName}_${frequency}]`);
           lines.push(`    mov rsi, r15             # Signal payload`);
           lines.push(`    call queue_enqueue`);
           lines.push(``);
@@ -232,17 +287,22 @@ class SchedulerCodegen {
     lines.push(`    inc r12`);
     lines.push(``);
 
-    // Process signals for each frequency
+    // Process signals for each source-frequency pair
     lines.push(`    # Process all pending signals`);
     lines.push(`    xor r13, r13          # r13 = signals processed this cycle`);
     lines.push(``);
 
-    // For each frequency, check queues and dispatch
-    for (const [freqName, freqInfo] of this.symbolTable.frequencies.entries()) {
-      lines.push(`    # Process ${freqName} signals`);
-      lines.push(`    call process_${freqName}_signals`);
-      lines.push(`    add r13, rax          # Add to signal count`);
-      lines.push(``);
+    // Group routes by source-frequency pair and process each
+    const routesSeen = new Set();
+    for (const route of this.symbolTable.routingTable) {
+      const key = `${route.source}_${route.frequency}`;
+      if (!routesSeen.has(key)) {
+        routesSeen.add(key);
+        lines.push(`    # Process ${route.frequency} signals from ${route.source}`);
+        lines.push(`    call process_${key}_signals`);
+        lines.push(`    add r13, rax          # Add to signal count`);
+        lines.push(``);
+      }
     }
 
     // Check if any signals were processed
@@ -264,6 +324,11 @@ class SchedulerCodegen {
 
     lines.push(`.cycle_max_reached:`);
     lines.push(`    # Max cycles reached - safety exit`);
+    lines.push(`    # Print warning`);
+    lines.push(`    push rdi`);
+    lines.push(`    lea rdi, [max_cycles_warning]`);
+    lines.push(`    call builtin_println`);
+    lines.push(`    pop rdi`);
     lines.push(`    mov rax, -1           # Return -1 to indicate timeout`);
     lines.push(``);
 
@@ -278,17 +343,32 @@ class SchedulerCodegen {
   }
 
   /**
-   * Generate signal processing functions for each frequency
+   * Generate signal processing functions for each source-frequency pair
+   * This prevents routing loops by processing signals from each source separately
    */
   generateSignalProcessors() {
     const lines = [];
 
-    for (const [freqName, freqInfo] of this.symbolTable.frequencies.entries()) {
+    // Group routes by source-frequency pair
+    const routesBySourceFreq = new Map();
+    for (const route of this.symbolTable.routingTable) {
+      const key = `${route.source}_${route.frequency}`;
+      if (!routesBySourceFreq.has(key)) {
+        routesBySourceFreq.set(key, []);
+      }
+      routesBySourceFreq.get(key).push(route);
+    }
+
+    // Generate a processor for each source-frequency pair
+    for (const [key, routes] of routesBySourceFreq.entries()) {
+      const freqName = routes[0].frequency;
+      const sourceName = routes[0].source;
+
       lines.push(`# ================================================================`);
-      lines.push(`# Process ${freqName} Signals`);
+      lines.push(`# Process ${freqName} Signals from ${sourceName}`);
       lines.push(`# Returns: rax = number of signals processed`);
       lines.push(`# ================================================================`);
-      lines.push(`process_${freqName}_signals:`);
+      lines.push(`process_${key}_signals:`);
       lines.push(`    push rbp`);
       lines.push(`    mov rbp, rsp`);
       lines.push(`    push r12              # Agent state pointer`);
@@ -299,42 +379,27 @@ class SchedulerCodegen {
       lines.push(`    xor r14, r14          # r14 = signals processed`);
       lines.push(``);
 
-      // Find all routes for this frequency
-      const routes = this.symbolTable.routingTable.filter(r => r.frequency === freqName);
-
-      if (routes.length === 0) {
-        lines.push(`    # No routes for frequency ${freqName}`);
-        lines.push(`    xor rax, rax`);
-        lines.push(`    pop r14`);
-        lines.push(`    pop r13`);
-        lines.push(`    pop r12`);
-        lines.push(`    pop rbp`);
-        lines.push(`    ret`);
-        lines.push(``);
-        continue;
-      }
-
       // Check queue for signals
-      lines.push(`.process_${freqName}_loop:`);
+      lines.push(`.process_${key}_loop:`);
       lines.push(`    # Check if queue has signals`);
-      lines.push(`    lea rdi, [signal_queue_${freqName}]`);
+      lines.push(`    lea rdi, [signal_queue_${key}]`);
       lines.push(`    call queue_has_signals`);
       lines.push(`    test rax, rax`);
-      lines.push(`    jz .process_${freqName}_done`);
+      lines.push(`    jz .process_${key}_done`);
       lines.push(``);
 
       // Dequeue signal
       lines.push(`    # Dequeue signal`);
-      lines.push(`    lea rdi, [signal_queue_${freqName}]`);
+      lines.push(`    lea rdi, [signal_queue_${key}]`);
       lines.push(`    lea rsi, [signal_buffer]`);
       lines.push(`    call queue_dequeue`);
       lines.push(`    mov r13, rax          # r13 = signal payload pointer`);
       lines.push(``);
 
-      // Dispatch to all targets for this frequency
+      // Dispatch to all targets for this source-frequency combination
       for (const route of routes) {
         const agentId = route.target;
-        
+
         // Skip fruiting bodies (output points)
         if (this.symbolTable.fruitingBodies.has(agentId)) {
           lines.push(`    # Signal to fruiting body ${agentId} - output`);
@@ -343,7 +408,7 @@ class SchedulerCodegen {
         }
 
         const stateOffset = this.symbolTable.getAgentStateOffset(agentId);
-        lines.push(`    # Dispatch to ${agentId}`);
+        lines.push(`    # Dispatch to ${agentId} (from ${sourceName})`);
         lines.push(`    lea r12, [agent_state_base + ${stateOffset}]`);
         lines.push(`    mov rdi, r12          # Agent state`);
         lines.push(`    mov rsi, r13          # Signal payload`);
@@ -353,10 +418,10 @@ class SchedulerCodegen {
 
       lines.push(`    # Increment processed counter`);
       lines.push(`    inc r14`);
-      lines.push(`    jmp .process_${freqName}_loop`);
+      lines.push(`    jmp .process_${key}_loop`);
       lines.push(``);
 
-      lines.push(`.process_${freqName}_done:`);
+      lines.push(`.process_${key}_done:`);
       lines.push(`    mov rax, r14          # Return signals processed`);
       lines.push(`    pop r14`);
       lines.push(`    pop r13`);
@@ -498,30 +563,29 @@ class SchedulerCodegen {
     lines.push(`    mov rbp, rsp`);
     lines.push(``);
 
-    lines.push(`    # Check argc`);
-    lines.push(`    cmp rdi, 3            # Need at least 3 args (program, source, output)`);
-    lines.push(`    jge .parse_args`);
+    lines.push(`    # Check if source_file provided (argc >= 2)`);
+    lines.push(`    cmp rdi, 2`);
+    lines.push(`    jl .use_default_source`);
+    lines.push(`    mov rax, [rsi + 8]    # argv[1] = source_file`);
+    lines.push(`    mov [cli_arg_source], rax`);
+    lines.push(`    jmp .check_output`);
     lines.push(``);
-
-    lines.push(`    # Not enough arguments - use defaults`);
+    lines.push(`.use_default_source:`);
     lines.push(`    lea rax, [default_source]`);
     lines.push(`    mov [cli_arg_source], rax`);
-    lines.push(`    lea rax, [default_output]`);
+    lines.push(``);
+    lines.push(`.check_output:`);
+    lines.push(`    # Check if output_file provided (argc >= 3)`);
+    lines.push(`    cmp rdi, 3`);
+    lines.push(`    jl .use_default_output`);
+    lines.push(`    mov rax, [rsi + 16]   # argv[2] = output_file`);
     lines.push(`    mov [cli_arg_output], rax`);
     lines.push(`    jmp .parse_done`);
     lines.push(``);
-
-    lines.push(`.parse_args:`);
-    lines.push(`    # Parse argv[1] = source_file`);
-    lines.push(`    mov rax, [rsi + 8]    # argv[1]`);
-    lines.push(`    mov [cli_arg_source], rax`);
-    lines.push(``);
-
-    lines.push(`    # Parse argv[2] = output_file`);
-    lines.push(`    mov rax, [rsi + 16]   # argv[2]`);
+    lines.push(`.use_default_output:`);
+    lines.push(`    lea rax, [default_output]`);
     lines.push(`    mov [cli_arg_output], rax`);
     lines.push(``);
-
     lines.push(`.parse_done:`);
     lines.push(`    pop rbp`);
     lines.push(`    ret`);
@@ -540,10 +604,9 @@ class SchedulerCodegen {
     lines.push(`# Exit Program`);
     lines.push(`# ================================================================`);
     lines.push(`exit_program:`);
-    lines.push(`    # Exit with code 0`);
-    lines.push(`    mov rdi, 0            # Exit code`);
-    lines.push(`    mov rax, 60           # syscall: exit`);
-    lines.push(`    syscall`);
+    lines.push(`    # Exit with code 0 - use libc exit to flush stdio buffers`);
+    lines.push(`    xor rdi, rdi          # Exit code 0`);
+    lines.push(`    call exit             # Call libc exit (flushes buffers)`);
     lines.push(``);
 
     return lines;
@@ -576,15 +639,54 @@ class SchedulerCodegen {
     lines.push(`default_output:`);
     lines.push(`    .asciz "a.out"`);
     lines.push(``);
+    lines.push(`# Warning/debug messages`);
+    lines.push(`max_cycles_warning:`);
+    lines.push(`    .asciz "[WARNING] Max tidal cycles (10) reached - possible infinite loop"`);
+    lines.push(`startup_msg:`);
+    lines.push(`    .asciz "[DEBUG] Program starting..."`);
+    lines.push(`cli_parsed_msg:`);
+    lines.push(`    .asciz "[DEBUG] CLI args parsed"`);
+    lines.push(`init_done_msg:`);
+    lines.push(`    .asciz "[DEBUG] Agents initialized"`);
+    lines.push(`starting_tidal_msg:`);
+    lines.push(`    .asciz "[DEBUG] Starting tidal cycle loop..."`);
+    lines.push(`cycle_start_msg:`);
+    lines.push(`    .asciz "[CYCLE]"`);
+    lines.push(``);
 
-    // Create a queue for each frequency
+    // Create a queue for each agent-frequency pair (to prevent routing loops)
+    // This includes all combinations since any agent may emit any frequency
     // Ring buffer: [head_idx][tail_idx][buffer array]
-    for (const [freqName, freqInfo] of this.symbolTable.frequencies.entries()) {
-      lines.push(`signal_queue_${freqName}:`);
-      lines.push(`    .quad 0                          # head_idx (initialized to 0)`);
-      lines.push(`    .quad 0                          # tail_idx (initialized to 0)`);
-      lines.push(`    .skip ${this.queueCapacity * 8}  # buffer: ${this.queueCapacity} pointers`);
-      lines.push(``);
+    const queuesSeen = new Set();
+
+    // Generate queues for all agent × frequency combinations
+    for (const [agentId, agent] of this.symbolTable.agents.entries()) {
+      for (const [freqName, freqInfo] of this.symbolTable.frequencies.entries()) {
+        const queueName = `${agentId}_${freqName}`;
+        if (!queuesSeen.has(queueName)) {
+          queuesSeen.add(queueName);
+          lines.push(`signal_queue_${queueName}:`);
+          lines.push(`    .quad 0                          # head_idx (initialized to 0)`);
+          lines.push(`    .quad 0                          # tail_idx (initialized to 0)`);
+          lines.push(`    .skip ${this.queueCapacity * 8}  # buffer: ${this.queueCapacity} pointers`);
+          lines.push(``);
+        }
+      }
+    }
+
+    // Also create queues for fruiting body (input) sources
+    for (const [fbName, fbInfo] of this.symbolTable.fruitingBodies.entries()) {
+      for (const [freqName, freqInfo] of this.symbolTable.frequencies.entries()) {
+        const queueName = `${fbName}_${freqName}`;
+        if (!queuesSeen.has(queueName)) {
+          queuesSeen.add(queueName);
+          lines.push(`signal_queue_${queueName}:`);
+          lines.push(`    .quad 0                          # head_idx (initialized to 0)`);
+          lines.push(`    .quad 0                          # tail_idx (initialized to 0)`);
+          lines.push(`    .skip ${this.queueCapacity * 8}  # buffer: ${this.queueCapacity} pointers`);
+          lines.push(``);
+        }
+      }
     }
 
     // Create buffer space for each queue

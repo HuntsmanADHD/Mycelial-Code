@@ -358,7 +358,7 @@ class SymbolTable {
    */
   getTypeSize(type) {
     // Handle basic types
-    if (type === 'u8' || type === 'i8' || type === 'bool') return 1;
+    if (type === 'u8' || type === 'i8' || type === 'bool' || type === 'boolean') return 1;
     if (type === 'u16' || type === 'i16') return 2;
     if (type === 'u32' || type === 'i32' || type === 'f32') return 4;
     if (type === 'u64' || type === 'i64' || type === 'f64') return 8;

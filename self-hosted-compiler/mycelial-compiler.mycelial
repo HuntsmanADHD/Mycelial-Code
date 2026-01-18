@@ -58,7 +58,7 @@ network mycelial_compiler {
 
     # Individual token from lexer
     token {
-      type: string              # Token type (NETWORK, IDENTIFIER, NUMBER, etc.)
+      type: TokenType           # Token type (NETWORK, IDENTIFIER, NUMBER, etc.)
       value: string             # Token value as string
       line: u32                 # Source line number
       column: u32               # Source column number
@@ -168,6 +168,7 @@ network mycelial_compiler {
       label: string             # Data label
       data_type: string         # "asciz", "quad", "byte", "align"
       value: string             # Data value
+      section: string           # Target section (.text, .data, .rodata)
     }
 
     # Section directive
@@ -284,7 +285,7 @@ network mycelial_compiler {
       # Operators
       PLUS, MINUS, STAR, SLASH, PERCENT,
       EQ, NE, LT, GT, LE, GE,
-      AND, OR, NOT,
+      AND, OR, NOT, AT,
       ASSIGN, ARROW, COLON, DOT, COMMA,
       # Delimiters
       LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
@@ -940,6 +941,7 @@ network mycelial_compiler {
       data_type: string        # Data type (e.g., ".byte", ".word", ".quad")
       value: string            # Data value
       line_num: u32            # Source line number
+      section: string          # Section this data belongs to
     }
 
     # Instruction relocation entry
@@ -971,6 +973,7 @@ network mycelial_compiler {
       scale: u8                # Scale factor (1, 2, 4, 8)
       displacement: i32        # Displacement value
       is_rip_relative: boolean # Whether this is RIP-relative addressing
+      symbol: string           # Symbol name for RIP-relative addressing (empty if numeric)
     }
 
     # Assembly operand types
@@ -1142,6 +1145,7 @@ network mycelial_compiler {
     hyphal lexer {
       state {
         source: string                    # Source code to tokenize
+        source_len: u32                   # Cached source length (for O(1) access)
         filename: string                  # Source filename
         position: u32                     # Current position in source
         line: u32                         # Current line number
@@ -1150,7 +1154,7 @@ network mycelial_compiler {
         error_count: u32                  # Lexer error count
 
         # Keyword lookup table
-        keywords: map<string, string>     # Word -> Token type mapping
+        keywords: map<string, TokenType>     # Word -> Token type mapping
       }
 
       # Initialize lexer state
@@ -1163,54 +1167,60 @@ network mycelial_compiler {
 
         # Initialize keywords map
         state.keywords = map_new()
-        map_insert(state.keywords, "network", "NETWORK")
-        map_insert(state.keywords, "frequencies", "FREQUENCIES")
-        map_insert(state.keywords, "frequency", "FREQUENCY")
-        map_insert(state.keywords, "hyphae", "HYPHAE")
-        map_insert(state.keywords, "hyphal", "HYPHAL")
-        map_insert(state.keywords, "state", "STATE")
-        map_insert(state.keywords, "on", "ON")
-        map_insert(state.keywords, "signal", "SIGNAL")
-        map_insert(state.keywords, "emit", "EMIT")
-        map_insert(state.keywords, "report", "REPORT")
-        map_insert(state.keywords, "spawn", "SPAWN")
-        map_insert(state.keywords, "die", "DIE")
-        map_insert(state.keywords, "socket", "SOCKET")
-        map_insert(state.keywords, "fruiting_body", "FRUITING_BODY")
-        map_insert(state.keywords, "topology", "TOPOLOGY")
-        map_insert(state.keywords, "config", "CONFIG")
-        map_insert(state.keywords, "if", "IF")
-        map_insert(state.keywords, "else", "ELSE")
-        map_insert(state.keywords, "where", "WHERE")
-        map_insert(state.keywords, "rest", "REST")
-        map_insert(state.keywords, "cycle", "CYCLE")
-        map_insert(state.keywords, "let", "LET")
-        map_insert(state.keywords, "for", "FOR")
-        map_insert(state.keywords, "in", "IN")
-        map_insert(state.keywords, "while", "WHILE")
-        map_insert(state.keywords, "true", "TRUE")
-        map_insert(state.keywords, "false", "FALSE")
-        map_insert(state.keywords, "u8", "U8")
-        map_insert(state.keywords, "u16", "U16")
-        map_insert(state.keywords, "u32", "U32")
-        map_insert(state.keywords, "u64", "U64")
-        map_insert(state.keywords, "i8", "I8")
-        map_insert(state.keywords, "i16", "I16")
-        map_insert(state.keywords, "i32", "I32")
-        map_insert(state.keywords, "i64", "I64")
-        map_insert(state.keywords, "f32", "F32")
-        map_insert(state.keywords, "f64", "F64")
-        map_insert(state.keywords, "string", "STRING_TYPE")
-        map_insert(state.keywords, "binary", "BINARY_TYPE")
-        map_insert(state.keywords, "boolean", "BOOLEAN_TYPE")
-        map_insert(state.keywords, "vec", "VEC")
-        map_insert(state.keywords, "queue", "QUEUE")
-        map_insert(state.keywords, "map", "MAP")
+        map_insert(state.keywords, "network", TokenType::NETWORK)
+        map_insert(state.keywords, "frequencies", TokenType::FREQUENCIES)
+        map_insert(state.keywords, "frequency", TokenType::FREQUENCY)
+        map_insert(state.keywords, "hyphae", TokenType::HYPHAE)
+        map_insert(state.keywords, "hyphal", TokenType::HYPHAL)
+        map_insert(state.keywords, "state", TokenType::STATE)
+        map_insert(state.keywords, "on", TokenType::ON)
+        map_insert(state.keywords, "signal", TokenType::SIGNAL)
+        map_insert(state.keywords, "emit", TokenType::EMIT)
+        map_insert(state.keywords, "report", TokenType::REPORT)
+        map_insert(state.keywords, "spawn", TokenType::SPAWN)
+        map_insert(state.keywords, "die", TokenType::DIE)
+        map_insert(state.keywords, "socket", TokenType::SOCKET)
+        map_insert(state.keywords, "fruiting_body", TokenType::FRUITING_BODY)
+        map_insert(state.keywords, "topology", TokenType::TOPOLOGY)
+        map_insert(state.keywords, "config", TokenType::CONFIG)
+        map_insert(state.keywords, "if", TokenType::IF)
+        map_insert(state.keywords, "else", TokenType::ELSE)
+        map_insert(state.keywords, "where", TokenType::WHERE)
+        map_insert(state.keywords, "rest", TokenType::REST)
+        map_insert(state.keywords, "cycle", TokenType::CYCLE)
+        map_insert(state.keywords, "let", TokenType::LET)
+        map_insert(state.keywords, "for", TokenType::FOR)
+        map_insert(state.keywords, "in", TokenType::IN)
+        map_insert(state.keywords, "while", TokenType::WHILE)
+        map_insert(state.keywords, "import", TokenType::IMPORT)
+        map_insert(state.keywords, "types", TokenType::TYPES)
+        map_insert(state.keywords, "struct", TokenType::STRUCT)
+        map_insert(state.keywords, "enum", TokenType::ENUM)
+        map_insert(state.keywords, "constants", TokenType::CONSTANTS)
+        map_insert(state.keywords, "true", TokenType::TRUE)
+        map_insert(state.keywords, "false", TokenType::FALSE)
+        map_insert(state.keywords, "u8", TokenType::U8)
+        map_insert(state.keywords, "u16", TokenType::U16)
+        map_insert(state.keywords, "u32", TokenType::U32)
+        map_insert(state.keywords, "u64", TokenType::U64)
+        map_insert(state.keywords, "i8", TokenType::I8)
+        map_insert(state.keywords, "i16", TokenType::I16)
+        map_insert(state.keywords, "i32", TokenType::I32)
+        map_insert(state.keywords, "i64", TokenType::I64)
+        map_insert(state.keywords, "f32", TokenType::F32)
+        map_insert(state.keywords, "f64", TokenType::F64)
+        map_insert(state.keywords, "string", TokenType::STRING_TYPE)
+        map_insert(state.keywords, "binary", TokenType::BINARY_TYPE)
+        map_insert(state.keywords, "boolean", TokenType::BOOLEAN_TYPE)
+        map_insert(state.keywords, "vec", TokenType::VEC)
+        map_insert(state.keywords, "queue", TokenType::QUEUE)
+        map_insert(state.keywords, "map", TokenType::MAP)
       }
 
       # Receive tokenization request
       on signal(lex_request, req) {
         state.source = req.source
+        state.source_len = string_len(req.source)  # Cache length for O(1) access
         state.filename = req.filename
         state.position = 0
         state.line = 1
@@ -1224,10 +1234,10 @@ network mycelial_compiler {
 
       # Main tokenization loop
       rule tokenize_all() {
-        while state.position < string_len(state.source) {
+        while state.position < state.source_len {
           skip_whitespace_and_comments()
 
-          if state.position >= string_len(state.source) {
+          if state.position >= state.source_len {
             break
           }
 
@@ -1243,7 +1253,7 @@ network mycelial_compiler {
 
         # Emit EOF token
         emit token {
-          type: "EOF",
+          type: TokenType::EOF,
           value: "",
           line: state.line,
           column: state.column
@@ -1260,7 +1270,7 @@ network mycelial_compiler {
       # Peek at current character
       rule peek(offset: u32) -> string {
         let pos = state.position + offset
-        if pos >= string_len(state.source) {
+        if pos >= state.source_len {
           return ""
         }
         return string_char_at(state.source, pos)
@@ -1268,7 +1278,7 @@ network mycelial_compiler {
 
       # Advance position and return current character
       rule advance() -> string {
-        if state.position >= string_len(state.source) {
+        if state.position >= state.source_len {
           return ""
         }
 
@@ -1287,7 +1297,7 @@ network mycelial_compiler {
 
       # Skip whitespace
       rule skip_whitespace() {
-        while state.position < string_len(state.source) {
+        while state.position < state.source_len {
           let ch = peek(0)
           if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" {
             advance()
@@ -1300,7 +1310,7 @@ network mycelial_compiler {
       # Skip comment (# to end of line)
       rule skip_comment() -> boolean {
         if peek(0) == "#" {
-          while state.position < string_len(state.source) && peek(0) != "\n" {
+          while state.position < state.source_len && peek(0) != "\n" {
             advance()
           }
           if peek(0) == "\n" {
@@ -1328,20 +1338,20 @@ network mycelial_compiler {
         let num_str = ""
 
         # Read integer part
-        while state.position < string_len(state.source) && is_digit(peek(0)) {
+        while state.position < state.source_len && is_digit(peek(0)) {
           num_str = string_concat(num_str, advance())
         }
 
         # Read decimal part if present
         if peek(0) == "." && is_digit(peek(1)) {
           num_str = string_concat(num_str, advance())  # consume '.'
-          while state.position < string_len(state.source) && is_digit(peek(0)) {
+          while state.position < state.source_len && is_digit(peek(0)) {
             num_str = string_concat(num_str, advance())
           }
         }
 
         return Token {
-          type: "NUMBER",
+          type: TokenType::NUMBER,
           value: num_str,
           line: start_line,
           column: start_col
@@ -1356,7 +1366,7 @@ network mycelial_compiler {
 
         advance()  # consume opening quote
 
-        while state.position < string_len(state.source) && peek(0) != quote {
+        while state.position < state.source_len && peek(0) != quote {
           if peek(0) == "\\" {
             advance()  # consume backslash
             let next_ch = advance()
@@ -1380,7 +1390,7 @@ network mycelial_compiler {
           }
         }
 
-        if state.position >= string_len(state.source) {
+        if state.position >= state.source_len {
           state.error_count = state.error_count + 1
           emit compilation_error {
             stage: "lexer",
@@ -1393,7 +1403,7 @@ network mycelial_compiler {
         }
 
         return Token {
-          type: "STRING_LIT",
+          type: TokenType::STRING_LIT,
           value: str_val,
           line: start_line,
           column: start_col
@@ -1406,7 +1416,7 @@ network mycelial_compiler {
         let start_col = state.column
         let ident = ""
 
-        while state.position < string_len(state.source) && is_alnum_or_underscore(peek(0)) {
+        while state.position < state.source_len && is_alnum_or_underscore(peek(0)) {
           ident = string_concat(ident, advance())
         }
 
@@ -1421,7 +1431,7 @@ network mycelial_compiler {
         }
 
         return Token {
-          type: "IDENTIFIER",
+          type: TokenType::IDENTIFIER,
           value: ident,
           line: start_line,
           column: start_col
@@ -1450,109 +1460,110 @@ network mycelial_compiler {
         }
 
         # Two-character operators
-        let two_char = string_concat(ch, peek(1))
+        let peek1 = peek(1)
+        let two_char = string_concat(ch, peek1)
 
         if two_char == "->" {
           advance()
           advance()
-          return Token { type: "ARROW", value: "->", line: start_line, column: start_col }
+          return Token { type: TokenType::ARROW, value: "->", line: start_line, column: start_col }
         }
 
         if two_char == "==" {
           advance()
           advance()
-          return Token { type: "EQ", value: "==", line: start_line, column: start_col }
+          return Token { type: TokenType::EQ, value: "==", line: start_line, column: start_col }
         }
 
         if two_char == "!=" {
           advance()
           advance()
-          return Token { type: "NE", value: "!=", line: start_line, column: start_col }
+          return Token { type: TokenType::NE, value: "!=", line: start_line, column: start_col }
         }
 
         if two_char == "<=" {
           advance()
           advance()
-          return Token { type: "LE", value: "<=", line: start_line, column: start_col }
+          return Token { type: TokenType::LE, value: "<=", line: start_line, column: start_col }
         }
 
         if two_char == ">=" {
           advance()
           advance()
-          return Token { type: "GE", value: ">=", line: start_line, column: start_col }
+          return Token { type: TokenType::GE, value: ">=", line: start_line, column: start_col }
         }
 
         if two_char == "&&" {
           advance()
           advance()
-          return Token { type: "AND", value: "&&", line: start_line, column: start_col }
+          return Token { type: TokenType::AND, value: "&&", line: start_line, column: start_col }
         }
 
         if two_char == "||" {
           advance()
           advance()
-          return Token { type: "OR", value: "||", line: start_line, column: start_col }
+          return Token { type: TokenType::OR, value: "||", line: start_line, column: start_col }
         }
 
         # Single-character tokens
         advance()
 
         if ch == "{" {
-          return Token { type: "LBRACE", value: "{", line: start_line, column: start_col }
+          return Token { type: TokenType::LBRACE, value: "{", line: start_line, column: start_col }
         }
         if ch == "}" {
-          return Token { type: "RBRACE", value: "}", line: start_line, column: start_col }
+          return Token { type: TokenType::RBRACE, value: "}", line: start_line, column: start_col }
         }
         if ch == "(" {
-          return Token { type: "LPAREN", value: "(", line: start_line, column: start_col }
+          return Token { type: TokenType::LPAREN, value: "(", line: start_line, column: start_col }
         }
         if ch == ")" {
-          return Token { type: "RPAREN", value: ")", line: start_line, column: start_col }
+          return Token { type: TokenType::RPAREN, value: ")", line: start_line, column: start_col }
         }
         if ch == "[" {
-          return Token { type: "LBRACKET", value: "[", line: start_line, column: start_col }
+          return Token { type: TokenType::LBRACKET, value: "[", line: start_line, column: start_col }
         }
         if ch == "]" {
-          return Token { type: "RBRACKET", value: "]", line: start_line, column: start_col }
+          return Token { type: TokenType::RBRACKET, value: "]", line: start_line, column: start_col }
         }
         if ch == "," {
-          return Token { type: "COMMA", value: ",", line: start_line, column: start_col }
+          return Token { type: TokenType::COMMA, value: ",", line: start_line, column: start_col }
         }
         if ch == ":" {
-          return Token { type: "COLON", value: ":", line: start_line, column: start_col }
+          return Token { type: TokenType::COLON, value: ":", line: start_line, column: start_col }
         }
         if ch == "." {
-          return Token { type: "DOT", value: ".", line: start_line, column: start_col }
+          return Token { type: TokenType::DOT, value: ".", line: start_line, column: start_col }
         }
         if ch == "=" {
-          return Token { type: "ASSIGN", value: "=", line: start_line, column: start_col }
+          return Token { type: TokenType::ASSIGN, value: "=", line: start_line, column: start_col }
         }
         if ch == "+" {
-          return Token { type: "PLUS", value: "+", line: start_line, column: start_col }
+          return Token { type: TokenType::PLUS, value: "+", line: start_line, column: start_col }
         }
         if ch == "-" {
-          return Token { type: "MINUS", value: "-", line: start_line, column: start_col }
+          return Token { type: TokenType::MINUS, value: "-", line: start_line, column: start_col }
         }
         if ch == "*" {
-          return Token { type: "STAR", value: "*", line: start_line, column: start_col }
+          return Token { type: TokenType::STAR, value: "*", line: start_line, column: start_col }
         }
         if ch == "/" {
-          return Token { type: "SLASH", value: "/", line: start_line, column: start_col }
+          return Token { type: TokenType::SLASH, value: "/", line: start_line, column: start_col }
         }
         if ch == "%" {
-          return Token { type: "PERCENT", value: "%", line: start_line, column: start_col }
+          return Token { type: TokenType::PERCENT, value: "%", line: start_line, column: start_col }
         }
         if ch == "<" {
-          return Token { type: "LT", value: "<", line: start_line, column: start_col }
+          return Token { type: TokenType::LT, value: "<", line: start_line, column: start_col }
         }
         if ch == ">" {
-          return Token { type: "GT", value: ">", line: start_line, column: start_col }
+          return Token { type: TokenType::GT, value: ">", line: start_line, column: start_col }
         }
         if ch == "!" {
-          return Token { type: "NOT", value: "!", line: start_line, column: start_col }
+          return Token { type: TokenType::NOT, value: "!", line: start_line, column: start_col }
         }
         if ch == "@" {
-          return Token { type: "AT", value: "@", line: start_line, column: start_col }
+          return Token { type: TokenType::AT, value: "@", line: start_line, column: start_col }
         }
 
         # Unknown character - emit error
@@ -1564,7 +1575,7 @@ network mycelial_compiler {
           column: start_col
         }
 
-        return Token { type: "ERROR", value: ch, line: start_line, column: start_col }
+        return Token { type: TokenType::ERROR, value: ch, line: start_line, column: start_col }
       }
 
       # Helper: check if character is a digit
@@ -1633,7 +1644,7 @@ network mycelial_compiler {
         tokens: vec<Token>                # Buffered tokens from lexer
         token_count: u32                  # Token count
 
-        ast_data: string                  # Serialized AST from parser
+        ast_data: Program                 # AST program from parser
         ast_node_count: u32               # AST node count
 
         ir_instructions: vec<string>      # Buffered IR instructions (JSON)
@@ -1730,6 +1741,16 @@ network mycelial_compiler {
         if lc.error_count > 0 {
           state.error_count = state.error_count + lc.error_count
           report status { message: format("  -> Lexer errors: {}", lc.error_count) }
+
+          # Abort on lexer errors
+          state.stage = "ERROR"
+          emit compilation_error {
+            stage: "lexer",
+            message: format("Lexer failed with {} errors", lc.error_count),
+            line: 0,
+            column: 0
+          }
+          return
         }
 
         report status { message: format("  -> Lexed {} tokens", lc.token_count) }
@@ -1765,8 +1786,8 @@ network mycelial_compiler {
 
       # Receive complete AST
       on signal(ast_complete, ast) {
-        # Store the Program object (will be serialized when needed)
-        state.ast_data = format("{}", ast.program)  # Convert to string for now
+        # Store the Program object for forwarding to IR generator
+        state.ast_data = ast.program
         state.ast_node_count = 1  # Placeholder
       }
 
@@ -1787,17 +1808,22 @@ network mycelial_compiler {
           state.error_count = state.error_count + pc.error_count
           report status { message: format("  -> Parse errors: {}", pc.error_count) }
 
-          # Abort if too many errors
-          if state.error_count > 10 {
-            state.stage = "ERROR"
-            emit compilation_error {
-              stage: "parser",
-              message: "Too many errors, aborting compilation",
-              line: 0,
-              column: 0
-            }
-            return
+          # Print each detailed error
+          let i = 0
+          while i < vec_len(state.errors) {
+            report status { message: format("    {}", state.errors[i]) }
+            i = i + 1
           }
+
+          # Abort compilation on any parse errors
+          state.stage = "ERROR"
+          emit compilation_error {
+            stage: "parser",
+            message: format("Parse failed with {} errors", pc.error_count),
+            line: 0,
+            column: 0
+          }
+          return
         }
 
         report status { message: "  -> Generating IR..." }
@@ -1891,7 +1917,8 @@ network mycelial_compiler {
         emit asm_data {
           label: data.label,
           data_type: data.data_type,
-          value: data.value
+          value: data.value,
+          section: data.section
         }
       }
 
@@ -1925,8 +1952,8 @@ network mycelial_compiler {
       # Receive machine code
       on signal(machine_code, mc) {
         let section_bytes = map_get_or_default(state.machine_code_sections, mc.section, vec_new())
-        let decoded_bytes = hex_decode(mc.bytes)
-        for b in decoded_bytes {
+        # mc.bytes is already a vec<u8>, no need to hex_decode
+        for b in mc.bytes {
           vec_push(section_bytes, b)
         }
         map_insert(state.machine_code_sections, mc.section, section_bytes)
@@ -1980,6 +2007,7 @@ network mycelial_compiler {
         state.error_count = state.error_count + 1
         vec_push(state.errors, format("Assembly error at line {}: {} (instruction: {})",
           err.line, err.message, err.instruction))
+        report status { message: format("  ASM ERROR: {} (instruction: {})", err.message, err.instruction) }
       }
 
       # Assembly complete - trigger linker
@@ -2863,7 +2891,10 @@ network mycelial_compiler {
 
         let frequency = ""
         if match_token(TokenType::LPAREN) {
-          expect(TokenType::IDENTIFIER, "Expected 'frequency'")  # "frequency" keyword
+          # Accept either FREQUENCY keyword or IDENTIFIER for the option name
+          if !match_token(TokenType::FREQUENCY) {
+            expect(TokenType::IDENTIFIER, "Expected 'frequency'")
+          }
           expect(TokenType::COLON, "Expected ':' after 'frequency'")
           let freq_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
           frequency = freq_tok.value
@@ -2949,6 +2980,10 @@ network mycelial_compiler {
           }
           TokenType::IDENTIFIER => {
             # Could be assignment or expression statement
+            return parse_assignment_or_expression()
+          }
+          TokenType::STATE => {
+            # State assignment: state.field = value
             return parse_assignment_or_expression()
           }
           _ => {
@@ -3543,6 +3578,16 @@ network mycelial_compiler {
 
             return Expression::ListLiteral(ListLiteralExpr {
               elements: elements,
+              location: loc
+            })
+          }
+          TokenType::STATE => {
+            # State access: state.field
+            advance()
+            expect(TokenType::DOT, "Expected '.' after 'state'")
+            let field_tok = expect(TokenType::IDENTIFIER, "Expected field name after 'state.'")
+            return Expression::StateAccess(StateAccessExpr {
+              field: field_tok.value,
               location: loc
             })
           }
@@ -4785,6 +4830,9 @@ network mycelial_compiler {
       }
 
       on signal(ir_complete, irc) {
+        # Generate runtime stub functions (heap_init, scheduler_*, etc.)
+        generate_runtime_stubs()
+
         # M3 Phase 1b: Generate _start entry point that extracts argc/argv
         generate_start_function()
 
@@ -5931,6 +5979,58 @@ network mycelial_compiler {
       }
 
       # ─────────────────────────────────────────────────────────────────────────
+      # RUNTIME STUB GENERATION
+      # Generate minimal implementations of runtime functions so the linker can resolve them
+      # ─────────────────────────────────────────────────────────────────────────
+
+      rule generate_runtime_stubs() {
+        # Switch to .data section for global variables
+        emit asm_section { name: ".data" }
+
+        # Declare global variables used by main()
+        emit asm_data { label: "num_agents", data_type: "quad", value: "0", section: ".data" }
+        emit asm_data { label: "global_registry", data_type: "quad", value: "0", section: ".data" }
+        emit asm_data { label: "global_routing_table", data_type: "quad", value: "0", section: ".data" }
+        emit asm_data { label: "global_scheduler", data_type: "quad", value: "0", section: ".data" }
+
+        # Switch back to .text section for code
+        emit asm_section { name: ".text" }
+
+        # Generate heap_init - minimal stub that just returns
+        emit asm_instruction { label: "heap_init", mnemonic: "", operands: vec_new() }
+        emit asm_instruction { label: "", mnemonic: "ret", operands: vec_new() }
+
+        # Generate registry_create - returns 0 (null registry)
+        emit asm_instruction { label: "registry_create", mnemonic: "", operands: vec_new() }
+        emit asm_instruction { label: "", mnemonic: "xorq", operands: vec_from("%rax", "%rax") }
+        emit asm_instruction { label: "", mnemonic: "ret", operands: vec_new() }
+
+        # Generate init_agents - stub that just returns
+        emit asm_instruction { label: "init_agents", mnemonic: "", operands: vec_new() }
+        emit asm_instruction { label: "", mnemonic: "ret", operands: vec_new() }
+
+        # Generate init_routing_tables - stub that just returns
+        emit asm_instruction { label: "init_routing_tables", mnemonic: "", operands: vec_new() }
+        emit asm_instruction { label: "", mnemonic: "ret", operands: vec_new() }
+
+        # Generate scheduler_create - returns 0 (null scheduler)
+        emit asm_instruction { label: "scheduler_create", mnemonic: "", operands: vec_new() }
+        emit asm_instruction { label: "", mnemonic: "xorq", operands: vec_from("%rax", "%rax") }
+        emit asm_instruction { label: "", mnemonic: "ret", operands: vec_new() }
+
+        # Generate scheduler_run - stub that just returns
+        emit asm_instruction { label: "scheduler_run", mnemonic: "", operands: vec_new() }
+        emit asm_instruction { label: "", mnemonic: "ret", operands: vec_new() }
+
+        # Generate scheduler_destroy - stub that just returns
+        emit asm_instruction { label: "scheduler_destroy", mnemonic: "", operands: vec_new() }
+        emit asm_instruction { label: "", mnemonic: "ret", operands: vec_new() }
+
+        state.asm_count = state.asm_count + 14
+        state.function_count = state.function_count + 7
+      }
+
+      # ─────────────────────────────────────────────────────────────────────────
       # M2 PHASE 5: MAIN FUNCTION GENERATION
       # ─────────────────────────────────────────────────────────────────────────
 
@@ -5944,18 +6044,24 @@ network mycelial_compiler {
         #   [rsp + 16] = argv[1]
         #   ...
 
+        # Switch to .data section for global variables
         # Declare global variables for argc and argv in .data section
         emit asm_data {
           label: "argc",
           data_type: "quad",
-          value: "0"
+          value: "0",
+          section: ".data"
         }
 
         emit asm_data {
           label: "argv",
           data_type: "quad",
-          value: "0"
+          value: "0",
+          section: ".data"
         }
+
+        # Switch back to .text section for code
+        emit asm_section { name: ".text" }
 
         # _start entry point label
         emit asm_instruction {
@@ -6383,13 +6489,15 @@ network mycelial_compiler {
       on signal(asm_data, data) {
         state.line_num = state.line_num + 1
 
+        # Use section from signal, fallback to current if empty
+        let target_section = if data.section != "" { data.section } else { state.current_section }
+
         # Record label if present
         if data.label != "" {
-          let offset = get_current_section_offset()
           let sym = Symbol {
             name: data.label,
-            section: state.current_section,
-            offset: offset,
+            section: target_section,
+            offset: 0,  # Will be updated during encode_data_sections
             is_global: starts_with(data.label, "_") || !starts_with(data.label, "."),
             is_defined: true
           }
@@ -6401,7 +6509,8 @@ network mycelial_compiler {
           label: data.label,
           data_type: data.data_type,
           value: data.value,
-          line_num: state.line_num
+          line_num: state.line_num,
+          section: target_section
         }
         vec_push(state.data_lines, line)
       }
@@ -6448,66 +6557,168 @@ network mycelial_compiler {
 
       rule pass2_encode_instructions() {
         for line in state.asm_lines {
+          # Update symbol offset BEFORE encoding (label points to next instruction)
+          if line.label != "" && map_has(state.symbols, line.label) {
+            let sym: Symbol = map_get(state.symbols, line.label)
+            sym.offset = vec_len(state.text_section.data)
+            map_set(state.symbols, line.label, sym)
+          }
+
           let encoded = encode_instruction(line.mnemonic, line.operands, line.line_num)
 
-          # Add bytes to section
-          let section = get_current_section_mut()
+          # Add bytes to .text section (all instructions go to .text)
           for byte in encoded.bytes {
-            vec_push(section.data, byte)
+            vec_push(state.text_section.data, byte)
           }
 
           # Add relocations
           for reloc: InstrRelocation in encoded.relocations {
             let section_reloc = SectionRelocation {
-              offset: vec_len(section.data) - vec_len(encoded.bytes) + reloc.offset,
+              offset: vec_len(state.text_section.data) - vec_len(encoded.bytes) + reloc.offset,
               symbol: reloc.symbol,
               reloc_type: reloc.reloc_type,
               addend: reloc.addend
             }
-            vec_push(section.relocations, section_reloc)
+            vec_push(state.text_section.relocations, section_reloc)
           }
         }
       }
 
       rule encode_data_sections() {
         for data in state.data_lines {
-          match data.data_type {
-            "asciz" | "ascii" => {
-              let bytes = string_to_bytes(data.value)
-              let section = get_section_by_name_mut(state.current_section)
-              for byte in bytes {
-                vec_push(section.data, byte)
+          # Update symbol offset and encode data based on section
+          match data.section {
+            ".text" => {
+              if data.label != "" && map_has(state.symbols, data.label) {
+                let sym: Symbol = map_get(state.symbols, data.label)
+                sym.offset = vec_len(state.text_section.data)
+                map_set(state.symbols, data.label, sym)
               }
-              if data.data_type == "asciz" {
-                vec_push(section.data, 0u8)  # Null terminator
-              }
+              encode_data_to_section_text(data)
             }
-            "quad" => {
-              let val = parse_i64(data.value)
-              let bytes = i64_to_le_bytes(val)
-              let section = get_section_by_name_mut(state.current_section)
-              for byte in bytes {
-                vec_push(section.data, byte)
+            ".rodata" => {
+              if data.label != "" && map_has(state.symbols, data.label) {
+                let sym: Symbol = map_get(state.symbols, data.label)
+                sym.offset = vec_len(state.rodata_section.data)
+                map_set(state.symbols, data.label, sym)
               }
+              encode_data_to_section_rodata(data)
             }
-            "byte" => {
-              let val = parse_u8(data.value)
-              let section = get_section_by_name_mut(state.current_section)
-              vec_push(section.data, val)
-            }
-            "align" => {
-              let alignment = parse_u32(data.value)
-              let section = get_section_by_name_mut(state.current_section)
-              let current = vec_len(section.data)
-              let padding = (alignment - (current % alignment)) % alignment
-              for i in 0..padding {
-                vec_push(section.data, 0u8)
+            ".data" => {
+              if data.label != "" && map_has(state.symbols, data.label) {
+                let sym: Symbol = map_get(state.symbols, data.label)
+                sym.offset = vec_len(state.data_section.data)
+                map_set(state.symbols, data.label, sym)
               }
+              encode_data_to_section_data(data)
             }
             _ => {
-              # Unknown data type
+              # Default to .text
+              encode_data_to_section_text(data)
             }
           }
+        }
+      }
+
+      rule encode_data_to_section_data(data: DataLine) {
+        match data.data_type {
+          "asciz" | "ascii" => {
+            let bytes = string_to_bytes(data.value)
+            for byte in bytes {
+              vec_push(state.data_section.data, byte)
+            }
+            if data.data_type == "asciz" {
+              vec_push(state.data_section.data, 0u8)
+            }
+          }
+          "quad" => {
+            let val = parse_i64(data.value)
+            let bytes = i64_to_le_bytes(val)
+            for byte in bytes {
+              vec_push(state.data_section.data, byte)
+            }
+          }
+          "byte" => {
+            let val = parse_u8(data.value)
+            vec_push(state.data_section.data, val)
+          }
+          "align" => {
+            let alignment = parse_u32(data.value)
+            let current = vec_len(state.data_section.data)
+            let padding = (alignment - (current % alignment)) % alignment
+            for i in 0..padding {
+              vec_push(state.data_section.data, 0u8)
+            }
+          }
+          _ => {}
+        }
+      }
+
+      rule encode_data_to_section_rodata(data: DataLine) {
+        match data.data_type {
+          "asciz" | "ascii" => {
+            let bytes = string_to_bytes(data.value)
+            for byte in bytes {
+              vec_push(state.rodata_section.data, byte)
+            }
+            if data.data_type == "asciz" {
+              vec_push(state.rodata_section.data, 0u8)
+            }
+          }
+          "quad" => {
+            let val = parse_i64(data.value)
+            let bytes = i64_to_le_bytes(val)
+            for byte in bytes {
+              vec_push(state.rodata_section.data, byte)
+            }
+          }
+          "byte" => {
+            let val = parse_u8(data.value)
+            vec_push(state.rodata_section.data, val)
+          }
+          "align" => {
+            let alignment = parse_u32(data.value)
+            let current = vec_len(state.rodata_section.data)
+            let padding = (alignment - (current % alignment)) % alignment
+            for i in 0..padding {
+              vec_push(state.rodata_section.data, 0u8)
+            }
+          }
+          _ => {}
+        }
+      }
+
+      rule encode_data_to_section_text(data: DataLine) {
+        match data.data_type {
+          "asciz" | "ascii" => {
+            let bytes = string_to_bytes(data.value)
+            for byte in bytes {
+              vec_push(state.text_section.data, byte)
+            }
+            if data.data_type == "asciz" {
+              vec_push(state.text_section.data, 0u8)
+            }
+          }
+          "quad" => {
+            let val = parse_i64(data.value)
+            let bytes = i64_to_le_bytes(val)
+            for byte in bytes {
+              vec_push(state.text_section.data, byte)
+            }
+          }
+          "byte" => {
+            let val = parse_u8(data.value)
+            vec_push(state.text_section.data, val)
+          }
+          "align" => {
+            let alignment = parse_u32(data.value)
+            let current = vec_len(state.text_section.data)
+            let padding = (alignment - (current % alignment)) % alignment
+            for i in 0..padding {
+              vec_push(state.text_section.data, 0u8)
+            }
+          }
+          _ => {}
         }
       }
 
@@ -6549,6 +6760,31 @@ network mycelial_compiler {
             name: ".rodata",
             size: vec_len(state.rodata_section.data),
             flags: 0x2  # 0x2
+          }
+        }
+
+        # Emit data section
+        if vec_len(state.data_section.data) > 0 {
+          emit machine_code {
+            section: ".data",
+            offset: 0,
+            bytes: state.data_section.data
+          }
+
+          for reloc: SectionRelocation in state.data_section.relocations {
+            emit relocation {
+              section: ".data",
+              offset: reloc.offset,
+              symbol: reloc.symbol,
+              reloc_type: reloc.reloc_type,
+              addend: reloc.addend
+            }
+          }
+
+          emit section_info {
+            name: ".data",
+            size: vec_len(state.data_section.data),
+            flags: 0x3  # SHF_WRITE | SHF_ALLOC
           }
         }
 
@@ -6615,20 +6851,26 @@ network mycelial_compiler {
 
       rule parse_memory_operand(s: string) -> MemoryOperand {
         # Parse AT&T syntax: disp(base, index, scale) or (base)
-        # Also handle: offset(%reg) or (%reg)
+        # Also handle: offset(%reg) or (%reg) or symbol(%rip)
 
         let base = ""
         let index = ""
         let scale = 1u8
         let displacement = 0i32
         let is_rip = false
+        let symbol = ""
 
-        # Find displacement (before parenthesis)
+        # Find displacement/symbol (before parenthesis)
         let paren_pos = string_index_of(s, "(")
         if paren_pos > 0 {
           let disp_str = string_slice(s, 0, paren_pos)
-          if disp_str != "" && is_numeric_string(disp_str) {
-            displacement = parse_i32(disp_str)
+          if disp_str != "" {
+            if is_numeric_string(disp_str) {
+              displacement = parse_i32(disp_str)
+            } else {
+              # It's a symbol name
+              symbol = disp_str
+            }
           }
         }
 
@@ -6663,7 +6905,8 @@ network mycelial_compiler {
           index: index,
           scale: scale,
           displacement: displacement,
-          is_rip_relative: is_rip
+          is_rip_relative: is_rip,
+          symbol: symbol
         }
       }
 
@@ -6676,6 +6919,11 @@ network mycelial_compiler {
         let relocs: vec<InstrRelocation> = vec_new()
 
         match mnemonic {
+          # Empty mnemonic - label-only pseudo-instruction
+          "" => {
+            # Just a label, no actual instruction bytes
+          }
+
           # ─── DATA MOVEMENT ───
           "mov" | "movq" | "movl" | "movw" | "movb" => {
             encode_mov(operands, bytes, relocs)
@@ -7598,7 +7846,20 @@ network mycelial_compiler {
         if mem.is_rip_relative || mem.base == "" {
           # RIP-relative or absolute addressing
           vec_push(bytes, build_modrm(0, reg_code, 5))  # mod=00, r/m=101 (RIP-relative)
-          append_imm32(bytes, mem.displacement)
+
+          if mem.symbol != "" {
+            # Symbolic reference - emit relocation
+            let reloc = InstrRelocation {
+              offset: vec_len(bytes),
+              symbol: mem.symbol,
+              reloc_type: RelocationType::R_X86_64_PC32,
+              addend: -4  # PC-relative needs -4 adjustment
+            }
+            vec_push(relocs, reloc)
+            append_imm32(bytes, 0)  # Placeholder, will be patched by linker
+          } else {
+            append_imm32(bytes, mem.displacement)
+          }
           return
         }
 
@@ -7726,6 +7987,7 @@ network mycelial_compiler {
       rule estimate_instruction_size(mnemonic: string, operands: vec<Operand>) -> u32 {
         # Conservative estimate for instruction sizes
         match mnemonic {
+          "" => 0  # Label-only pseudo-instruction
           "ret" | "nop" | "hlt" => 1
           "syscall" | "ud2" => 2
           "cqo" | "cdq" => 2
@@ -7955,6 +8217,12 @@ network mycelial_compiler {
         # Step 2: Finalize symbol addresses
         finalize_symbol_addresses()
 
+        # Step 2b: Set entry point to _start symbol address
+        let start_addr = find_symbol_address("_start")
+        if start_addr != 0 {
+          state.entry_point = start_addr
+        }
+
         # Step 3: Apply relocations
         apply_relocations()
 
@@ -7999,9 +8267,9 @@ network mycelial_compiler {
         state.rodata_file_offset = align_up(text_end, 16)
         state.rodata_vaddr = 0x400000 + state.rodata_file_offset
 
-        # .data follows .rodata, aligned to 8 bytes
+        # .data follows .rodata, aligned to page boundary (4096) for RW permissions
         let rodata_end = state.rodata_file_offset + (vec_len(state.rodata_data) as u64)
-        state.data_file_offset = align_up(rodata_end, 8)
+        state.data_file_offset = align_up(rodata_end, 4096)
         state.data_vaddr = 0x400000 + state.data_file_offset
 
         # .bss follows .data (not in file, only in memory)
@@ -8062,9 +8330,11 @@ network mycelial_compiler {
           match reloc.reloc_type {
             RelocationType::R_X86_64_PC32 => {
               # PC-relative 32-bit: S + A - P
-              # P = address of next instruction (reloc_vaddr + 4)
-              let next_instr = reloc_vaddr + 4
-              let value = (symbol_vaddr as i64) + reloc.addend - (next_instr as i64)
+              # P = address of the 32-bit displacement field
+              # The CPU adds displacement to (P + 4), so displacement = S - (P + 4)
+              # Using S + A - P with A = -4 gives: S - 4 - P = S - (P + 4) + 0
+              # But we were double-counting the -4, so use A directly without extra offset
+              let value = (symbol_vaddr as i64) + reloc.addend - (reloc_vaddr as i64)
 
               # Patch in .text section
               if reloc.section == ".text" {
@@ -8349,12 +8619,8 @@ network mycelial_compiler {
 
       rule write_output_file() {
         # Write the output buffer to file
-        # In a real implementation, this would use a file I/O system
-        # For now, we emit the binary data as a signal
-
-        # The runtime would handle:
-        # write_file(state.output_file, state.output_buffer)
-        # chmod(state.output_file, 0o755)
+        write_file(state.output_file, state.output_buffer)
+        chmod(state.output_file, 493)  # 0o755 = 493 in decimal (rwxr-xr-x)
       }
 
       # ─────────────────────────────────────────────────────────────────────────
