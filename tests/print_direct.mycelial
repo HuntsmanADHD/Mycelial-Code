@@ -1,0 +1,22 @@
+# Direct print test
+network print_direct {
+  frequencies {
+    start { }
+  }
+
+  hyphae {
+    hyphal Main {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 42
+        print("Hello from Mycelial!\n")
+        print("x = ")
+        print_u32(state.x)
+        print("\n")
+      }
+    }
+  }
+}

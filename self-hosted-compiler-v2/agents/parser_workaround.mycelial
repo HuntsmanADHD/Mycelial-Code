@@ -1,0 +1,2284 @@
+    hyphal parser {
+      frequency tidal_cycle
+
+      state {
+        # Token buffer
+        tokens: vec<Token>
+        current: u32
+
+        # Error tracking
+        errors: vec<ParseError>
+        panic_mode: boolean
+
+        # Output
+        program: Program
+
+        # Parsing state
+        in_rule_body: boolean
+        current_binding: string    # Signal binding in scope
+        pending_gt: boolean        # True when we've consumed half of a >> token
+      }
+
+      # -------------------------------------------------------------------------
+      # TOKEN BUFFER MANAGEMENT
+      # -------------------------------------------------------------------------
+
+      on signal(token, t) {
+        # Buffer tokens as they arrive
+        vec_push(state.tokens, Token {
+          type: t.type,
+          value: t.value,
+          line: t.line,
+          column: t.column
+        })
+      }
+
+      on signal(lex_complete, lc) {
+        # All tokens received - start parsing
+        state.current = 0
+        state.panic_mode = false
+        vec_clear(state.errors)
+
+        # Parse the program
+        let program = parse_program()
+
+        # Emit result
+        if vec_len(state.errors) == 0 {
+          emit ast_complete {
+            items: program.items
+          }
+        }
+
+        emit parse_complete {
+          program_id: 1,
+          error_count: vec_len(state.errors)
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # TOKEN HELPERS
+      # -------------------------------------------------------------------------
+
+      rule peek() -> Token {
+        if state.current >= vec_len(state.tokens) {
+          return Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+        }
+        return state.tokens[state.current]
+      }
+
+      rule peek_ahead(n: u32) -> Token {
+        let idx = state.current + n
+        if idx >= vec_len(state.tokens) {
+          return Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+        }
+        return state.tokens[idx]
+      }
+
+      rule advance() -> Token {
+        let tok = peek()
+        if tok.type != TokenType::EOF {
+          state.current = state.current + 1
+        }
+        return tok
+      }
+
+      rule check(expected: TokenType) -> boolean {
+        return peek().type == expected
+      }
+
+      rule match_token(expected: TokenType) -> boolean {
+        if check(expected) {
+          advance()
+          return true
+        }
+        return false
+      }
+
+      rule expect(expected: TokenType, message: string) -> Token {
+        if check(expected) {
+          return advance()
+        }
+        error(message, expected)
+        # Advance one token to avoid infinite loops, but don't skip too much
+        if !check(TokenType::EOF) {
+          advance()
+        }
+        return Token { type: TokenType::ERROR, value: "", line: peek().line, column: peek().column }
+      }
+
+      # Special helper for closing '>' in type contexts
+      # Handles the >> -> > > split for nested generics like map<string, vec<u8>>
+      rule expect_closing_gt(message: string) -> boolean {
+        # First check if we have a pending > from a previous >> split
+        if state.pending_gt {
+          state.pending_gt = false
+          return true
+        }
+        # Normal case: single >
+        if check(TokenType::GT) {
+          advance()
+          return true
+        }
+        # Split case: >> treated as two >
+        if check(TokenType::SHIFT_RIGHT) {
+          advance()
+          state.pending_gt = true  # Save the second > for later
+          return true
+        }
+        error(message, TokenType::GT)
+        return false
+      }
+
+      rule current_location() -> SourceLocation {
+        let tok = peek()
+        return SourceLocation { line: tok.line, column: tok.column }
+      }
+
+      # -------------------------------------------------------------------------
+      # ERROR HANDLING
+      # -------------------------------------------------------------------------
+
+      rule error(message: string, expected: TokenType) {
+        let tok = peek()
+        let err = ParseError {
+          message: message,
+          location: SourceLocation { line: tok.line, column: tok.column },
+          expected: token_type_to_string(expected),
+          found: tok.value
+        }
+        vec_push(state.errors, err)
+
+        emit parse_error {
+          message: message,
+          line: tok.line,
+          column: tok.column,
+          expected: token_type_to_string(expected),
+          found: tok.value
+        }
+
+        state.panic_mode = true
+      }
+
+      rule synchronize() {
+        state.panic_mode = false
+        advance()
+
+        while !check(TokenType::EOF) {
+          # Synchronize at statement boundaries
+          match peek().type {
+            TokenType::NETWORK | TokenType::FREQUENCY | TokenType::HYPHAL | TokenType::ON | TokenType::EMIT | TokenType::IF | TokenType::LET => {
+              return
+            }
+            _ => {
+              advance()
+            }
+          }
+        }
+      }
+
+      rule token_type_to_string(tt: TokenType) -> string {
+        match tt {
+          TokenType::NETWORK => "network"
+          TokenType::FREQUENCY => "frequency"
+          TokenType::FREQUENCIES => "frequencies"
+          TokenType::HYPHAL => "hyphal"
+          TokenType::HYPHAE => "hyphae"
+          TokenType::STATE => "state"
+          TokenType::ON => "on"
+          TokenType::SIGNAL => "signal"
+          TokenType::REST => "rest"
+          TokenType::CYCLE => "cycle"
+          TokenType::EMIT => "emit"
+          TokenType::REPORT => "report"
+          TokenType::SPAWN => "spawn"
+          TokenType::DIE => "die"
+          TokenType::IF => "if"
+          TokenType::ELSE => "else"
+          TokenType::LET => "let"
+          TokenType::WHERE => "where"
+          TokenType::TOPOLOGY => "topology"
+          TokenType::SOCKET => "socket"
+          TokenType::FRUITING_BODY => "fruiting_body"
+          TokenType::LBRACE => "{"
+          TokenType::RBRACE => "}"
+          TokenType::LPAREN => "("
+          TokenType::RPAREN => ")"
+          TokenType::COMMA => ","
+          TokenType::COLON => ":"
+          TokenType::IDENTIFIER => "identifier"
+          TokenType::NUMBER => "number"
+          TokenType::STRING_LIT => "string"
+          TokenType::EOF => "end of file"
+          _ => "token"
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # PROGRAM PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_program() -> Program {
+        let items: vec<ProgramItem> = vec_new()
+        let loc = current_location()
+
+        while !check(TokenType::EOF) {
+          let item = parse_program_item()
+          if item != ProgramItem::None {
+            vec_push(items, item)
+          }
+
+          if state.panic_mode {
+            synchronize()
+          }
+        }
+
+        return Program { items: items, location: loc }
+      }
+
+      rule parse_program_item() -> ProgramItem {
+        match peek().type {
+          TokenType::NETWORK => {
+            return ProgramItem::Network(parse_network_def())
+          }
+          TokenType::FREQUENCY => {
+            return ProgramItem::Frequency(parse_frequency_def())
+          }
+          TokenType::IMPORT => {
+            return ProgramItem::Import(parse_import_def())
+          }
+          _ => {
+            error("Expected 'network', 'frequency', or 'import'", TokenType::NETWORK)
+            return ProgramItem::None
+          }
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # NETWORK PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_network_def() -> NetworkDef {
+        let loc = current_location()
+        expect(TokenType::NETWORK, "Expected 'network'")
+
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected network name")
+        let name = name_tok.value
+
+        expect(TokenType::LBRACE, "Expected '{' after network name")
+
+        let frequencies: vec<FrequencyDef> = vec_new()
+        let types: vec<TypeDef> = vec_new()
+        let constants: vec<ConstantDef> = vec_new()
+        let hyphae: vec<HyphalDef> = vec_new()
+        let topology: vec<TopologyItem> = vec_new()
+        let config: vec<ConfigItem> = vec_new()
+
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          match peek().type {
+            TokenType::FREQUENCIES => {
+              advance()
+              expect(TokenType::LBRACE, "Expected '{' after 'frequencies'")
+              while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+                vec_push(frequencies, parse_inline_frequency_def())
+              }
+              expect(TokenType::RBRACE, "Expected '}' to close frequencies block")
+            }
+            TokenType::TYPES => {
+              advance()
+              expect(TokenType::LBRACE, "Expected '{' after 'types'")
+              while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+                vec_push(types, parse_type_def())
+              }
+              expect(TokenType::RBRACE, "Expected '}' to close types block")
+            }
+            TokenType::CONSTANTS => {
+              advance()
+              expect(TokenType::LBRACE, "Expected '{' after 'constants'")
+              while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+                vec_push(constants, parse_constant_def())
+              }
+              expect(TokenType::RBRACE, "Expected '}' to close constants block")
+            }
+            TokenType::HYPHAE => {
+              advance()
+              expect(TokenType::LBRACE, "Expected '{' after 'hyphae'")
+              while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+                vec_push(hyphae, parse_hyphal_def())
+              }
+              expect(TokenType::RBRACE, "Expected '}' to close hyphae block")
+            }
+            TokenType::TOPOLOGY => {
+              advance()
+              expect(TokenType::LBRACE, "Expected '{' after 'topology'")
+              while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+                vec_push(topology, parse_topology_item())
+              }
+              expect(TokenType::RBRACE, "Expected '}' to close topology block")
+            }
+            TokenType::CONFIG => {
+              advance()
+              expect(TokenType::LBRACE, "Expected '{' after 'config'")
+              while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+                vec_push(config, parse_config_item())
+              }
+              expect(TokenType::RBRACE, "Expected '}' to close config block")
+            }
+            _ => {
+              error("Unexpected token in network definition", TokenType::RBRACE)
+              advance()
+            }
+          }
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close network")
+
+        return NetworkDef {
+          name: name,
+          frequencies: frequencies,
+          types: types,
+          constants: constants,
+          hyphae: hyphae,
+          topology: topology,
+          config: config,
+          location: loc
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # FREQUENCY PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_frequency_def() -> FrequencyDef {
+        let loc = current_location()
+        expect(TokenType::FREQUENCY, "Expected 'frequency'")
+
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
+        let name = name_tok.value
+
+        expect(TokenType::LBRACE, "Expected '{' after frequency name")
+
+        let fields: vec<FieldDef> = vec_new()
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          vec_push(fields, parse_field_def())
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close frequency")
+
+        return FrequencyDef {
+          name: name,
+          fields: fields,
+          location: loc
+        }
+      }
+
+      rule parse_inline_frequency_def() -> FrequencyDef {
+        let loc = current_location()
+
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
+        let name = name_tok.value
+
+        expect(TokenType::LBRACE, "Expected '{' after frequency name")
+
+        let fields: vec<FieldDef> = vec_new()
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          vec_push(fields, parse_field_def())
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close frequency")
+
+        return FrequencyDef {
+          name: name,
+          fields: fields,
+          location: loc
+        }
+      }
+
+      rule parse_field_def() -> FieldDef {
+        let loc = current_location()
+
+        # Field names can be identifiers OR keywords (contextual keywords)
+        let name_tok = peek()
+        let name = ""
+        if check(TokenType::IDENTIFIER) {
+          name_tok = advance()
+          name = name_tok.value
+        } else if is_contextual_keyword(name_tok.type) {
+          name_tok = advance()
+          name = name_tok.value
+        } else {
+          name_tok = expect(TokenType::IDENTIFIER, "Expected field name")
+          name = name_tok.value
+        }
+
+        expect(TokenType::COLON, "Expected ':' after field name")
+
+        let field_type = parse_type_ref()
+
+        return FieldDef {
+          name: name,
+          field_type: field_type,
+          location: loc
+        }
+      }
+
+      # Check if a token type is a keyword that can be used as a field name
+      rule is_contextual_keyword(tt: TokenType) -> boolean {
+        return tt == TokenType::FREQUENCIES || tt == TokenType::FREQUENCY ||
+               tt == TokenType::HYPHAE || tt == TokenType::HYPHAL ||
+               tt == TokenType::STATE || tt == TokenType::SOCKET ||
+               tt == TokenType::TOPOLOGY || tt == TokenType::CONFIG ||
+               tt == TokenType::SIGNAL || tt == TokenType::EMIT ||
+               tt == TokenType::SPAWN || tt == TokenType::REPORT ||
+               tt == TokenType::TYPES || tt == TokenType::CONSTANTS ||
+               tt == TokenType::NETWORK || tt == TokenType::IMPORT ||
+               tt == TokenType::ON || tt == TokenType::DIE ||
+               tt == TokenType::REST || tt == TokenType::CYCLE
+      }
+
+      # -------------------------------------------------------------------------
+      # TYPE PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_type_ref() -> TypeRef {
+        let tok = peek()
+
+        # Guard against EOF/empty token to prevent infinite loop in match
+        if tok.type == TokenType::EOF {
+          error("Expected type, found end of input", TokenType::IDENTIFIER)
+          return TypeRef::None
+        }
+
+        # Additional guard: check for empty value string
+        if tok.value == "" {
+          error("Expected type, found empty token", TokenType::IDENTIFIER)
+          return TypeRef::None
+        }
+
+        match tok.value {
+          "u8" => { advance(); return TypeRef::Primitive(PrimitiveType::U8) }
+          "u16" => { advance(); return TypeRef::Primitive(PrimitiveType::U16) }
+          "u32" => { advance(); return TypeRef::Primitive(PrimitiveType::U32) }
+          "u64" => { advance(); return TypeRef::Primitive(PrimitiveType::U64) }
+          "i8" => { advance(); return TypeRef::Primitive(PrimitiveType::I8) }
+          "i16" => { advance(); return TypeRef::Primitive(PrimitiveType::I16) }
+          "i32" => { advance(); return TypeRef::Primitive(PrimitiveType::I32) }
+          "i64" => { advance(); return TypeRef::Primitive(PrimitiveType::I64) }
+          "f32" => { advance(); return TypeRef::Primitive(PrimitiveType::F32) }
+          "f64" => { advance(); return TypeRef::Primitive(PrimitiveType::F64) }
+          "boolean" | "bool" => { advance(); return TypeRef::Primitive(PrimitiveType::Boolean) }
+          "string" => { advance(); return TypeRef::Primitive(PrimitiveType::String) }
+          "binary" => { advance(); return TypeRef::Primitive(PrimitiveType::Binary) }
+          "vec" => {
+            advance()
+            expect(TokenType::LT, "Expected '<' after 'vec'")
+            let inner = parse_type_ref()
+            expect_closing_gt("Expected '>' to close vec type")
+            return TypeRef::Vec(inner)
+          }
+          "queue" => {
+            advance()
+            expect(TokenType::LT, "Expected '<' after 'queue'")
+            let inner = parse_type_ref()
+            expect_closing_gt("Expected '>' to close queue type")
+            return TypeRef::Queue(inner)
+          }
+          "map" => {
+            advance()
+            expect(TokenType::LT, "Expected '<' after 'map'")
+            let key = parse_type_ref()
+            expect(TokenType::COMMA, "Expected ',' between map key and value types")
+            let val = parse_type_ref()
+            expect_closing_gt("Expected '>' to close map type")
+            return TypeRef::Map(key, val)
+          }
+          _ => {
+            if tok.type == TokenType::IDENTIFIER {
+              advance()
+              return TypeRef::Custom(tok.value)
+            }
+            error("Expected type", TokenType::IDENTIFIER)
+            advance()  # Always advance to prevent infinite loops
+            return TypeRef::None
+          }
+        }
+      }
+
+      rule parse_type_def() -> TypeDef {
+        let loc = current_location()
+
+        if check(TokenType::STRUCT) {
+          advance()
+          let name_tok = expect(TokenType::IDENTIFIER, "Expected struct name")
+          expect(TokenType::LBRACE, "Expected '{' after struct name")
+
+          let fields: vec<FieldDef> = vec_new()
+          while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+            vec_push(fields, parse_field_def())
+            match_token(TokenType::COMMA)  # Optional comma between fields
+          }
+          expect(TokenType::RBRACE, "Expected '}' to close struct")
+
+          return TypeDef {
+            name: name_tok.value,
+            type_kind: TypeDefKind::Struct(fields),
+            location: loc
+          }
+        } else if check(TokenType::ENUM) {
+          advance()
+          let name_tok = expect(TokenType::IDENTIFIER, "Expected enum name")
+          expect(TokenType::LBRACE, "Expected '{' after enum name")
+
+          let variants: vec<EnumVariant> = vec_new()
+          while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+            vec_push(variants, parse_enum_variant())
+            match_token(TokenType::COMMA)  # Optional comma
+          }
+          expect(TokenType::RBRACE, "Expected '}' to close enum")
+
+          return TypeDef {
+            name: name_tok.value,
+            type_kind: TypeDefKind::Enum(variants),
+            location: loc
+          }
+        } else {
+          error("Expected 'struct' or 'enum'", TokenType::STRUCT)
+          return TypeDef { name: "", type_kind: TypeDefKind::Struct(vec_new()), location: loc }
+        }
+      }
+
+      rule parse_enum_variant() -> EnumVariant {
+        let loc = current_location()
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected variant name")
+
+        let fields: vec<FieldDef> = vec_new()
+        if match_token(TokenType::LPAREN) {
+          while !check(TokenType::RPAREN) && !check(TokenType::EOF) {
+            let field_loc = current_location()
+
+            # Check if next token followed by ':' indicates named field
+            # Otherwise treat as tuple-style (just a type)
+            let is_named_field = false
+            if check(TokenType::IDENTIFIER) || is_contextual_keyword(peek().type) {
+              # Look ahead to see if colon follows
+              let saved_pos = state.current
+              let first_tok = advance()
+              if check(TokenType::COLON) {
+                # Named field: name: type
+                advance()  # consume ':'
+                let field_type = parse_type_ref()
+                vec_push(fields, FieldDef {
+                  name: first_tok.value,
+                  field_type: field_type,
+                  location: field_loc
+                })
+                is_named_field = true
+              } else {
+                # Put back the token by restoring position
+                state.current = saved_pos
+              }
+            }
+
+            if !is_named_field {
+              # Tuple-style: just a type, use index as field name
+              let field_idx = vec_len(fields)
+              let field_type = parse_type_ref()
+              vec_push(fields, FieldDef {
+                name: format("{}", field_idx),
+                field_type: field_type,
+                location: field_loc
+              })
+            }
+
+            if !check(TokenType::RPAREN) {
+              expect(TokenType::COMMA, "Expected ',' between variant fields")
+            }
+          }
+          expect(TokenType::RPAREN, "Expected ')' to close variant fields")
+        }
+
+        return EnumVariant {
+          name: name_tok.value,
+          fields: fields,
+          location: loc
+        }
+      }
+
+      rule parse_constant_def() -> ConstantDef {
+        let loc = current_location()
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected constant name")
+        expect(TokenType::ASSIGN, "Expected '=' after constant name")
+        let value = parse_expression()
+
+        return ConstantDef {
+          name: name_tok.value,
+          value: value,
+          location: loc
+        }
+      }
+
+      rule parse_config_item() -> ConfigItem {
+        let loc = current_location()
+        let key_tok = expect(TokenType::IDENTIFIER, "Expected config key")
+        expect(TokenType::COLON, "Expected ':' after config key")
+        let value = parse_expression()
+
+        return ConfigItem {
+          key: key_tok.value,
+          value: value,
+          location: loc
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # HYPHAL PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_hyphal_def() -> HyphalDef {
+        let loc = current_location()
+        expect(TokenType::HYPHAL, "Expected 'hyphal'")
+
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected hyphal name")
+        let name = name_tok.value
+
+        # Optional frequency reference
+        let freq_ref = ""
+        if match_token(TokenType::FREQUENCY) {
+          let freq_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
+          freq_ref = freq_tok.value
+        }
+
+        expect(TokenType::LBRACE, "Expected '{' after hyphal name")
+
+        let state_block = StateBlock { fields: vec_new(), location: loc }
+        let rules: vec<Rule> = vec_new()
+        let methods: vec<MethodDef> = vec_new()
+
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          match peek().type {
+            TokenType::STATE => {
+              state_block = parse_state_block()
+            }
+            TokenType::ON => {
+              vec_push(rules, parse_rule())
+            }
+            TokenType::RULE => {
+              vec_push(methods, parse_method_def())
+            }
+            TokenType::FREQUENCY => {
+              # frequency directive inside hyphal body
+              advance()
+              let freq_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
+              freq_ref = freq_tok.value
+            }
+            _ => {
+              error("Expected 'state', 'on', 'rule', or 'frequency' in hyphal definition", TokenType::ON)
+              advance()
+            }
+          }
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close hyphal")
+
+        return HyphalDef {
+          name: name,
+          frequency_ref: freq_ref,
+          state: state_block,
+          rules: rules,
+          methods: methods,
+          location: loc
+        }
+      }
+
+      rule parse_state_block() -> StateBlock {
+        let loc = current_location()
+        expect(TokenType::STATE, "Expected 'state'")
+        expect(TokenType::LBRACE, "Expected '{' after 'state'")
+
+        let fields: vec<StateField> = vec_new()
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          vec_push(fields, parse_state_field())
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close state block")
+
+        return StateBlock { fields: fields, location: loc }
+      }
+
+      rule parse_state_field() -> StateField {
+        let loc = current_location()
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected field name")
+        expect(TokenType::COLON, "Expected ':' after field name")
+        let field_type = parse_type_ref()
+
+        let init_value = Expression::None
+        if match_token(TokenType::ASSIGN) {
+          init_value = parse_expression()
+        }
+
+        return StateField {
+          name: name_tok.value,
+          field_type: field_type,
+          init_value: init_value,
+          location: loc
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # METHOD PARSING (rule definitions inside hyphal)
+      # -------------------------------------------------------------------------
+
+      rule parse_method_def() -> MethodDef {
+        let loc = current_location()
+        expect(TokenType::RULE, "Expected 'rule'")
+
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected method name")
+
+        # Parse parameters
+        expect(TokenType::LPAREN, "Expected '(' after method name")
+        let params: vec<ParamDef> = vec_new()
+        while !check(TokenType::RPAREN) && !check(TokenType::EOF) {
+          let param_loc = current_location()
+          # Accept identifier or contextual keywords as parameter names
+          let param_name_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+          if is_identifier_like() {
+            param_name_tok = advance()
+          } else {
+            error("Expected parameter name", TokenType::IDENTIFIER)
+            param_name_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+          }
+          expect(TokenType::COLON, "Expected ':' after parameter name")
+          let param_type = parse_type_ref()
+          vec_push(params, ParamDef {
+            name: param_name_tok.value,
+            param_type: param_type,
+            location: param_loc
+          })
+          if !check(TokenType::RPAREN) {
+            match_token(TokenType::COMMA)
+          }
+        }
+        expect(TokenType::RPAREN, "Expected ')' after parameters")
+
+        # Optional return type
+        let return_type = TypeRef::None
+        if match_token(TokenType::ARROW) {
+          return_type = parse_type_ref()
+        }
+
+        # Parse body
+        expect(TokenType::LBRACE, "Expected '{' for method body")
+        let body: vec<Statement> = vec_new()
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          let stmt = parse_statement()
+          if stmt != Statement::None {
+            vec_push(body, stmt)
+          }
+
+          # Optionally consume semicolon as statement terminator
+          match_token(TokenType::SEMICOLON)
+
+          # Panic recovery - synchronize on errors to prevent infinite loops
+          if state.panic_mode {
+            synchronize()
+          }
+        }
+        expect(TokenType::RBRACE, "Expected '}' to close method")
+
+        return MethodDef {
+          name: name_tok.value,
+          params: params,
+          return_type: return_type,
+          body: body,
+          location: loc
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # RULE PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_rule() -> Rule {
+        let loc = current_location()
+        expect(TokenType::ON, "Expected 'on'")
+
+        let trigger = parse_rule_trigger()
+
+        # Optional guard
+        let guard = Expression::None
+        if match_token(TokenType::WHERE) {
+          guard = parse_expression()
+        }
+
+        expect(TokenType::LBRACE, "Expected '{' after rule trigger")
+
+        state.in_rule_body = true
+        let body = parse_statement_list()
+        state.in_rule_body = false
+
+        expect(TokenType::RBRACE, "Expected '}' to close rule")
+
+        return Rule {
+          trigger: trigger,
+          guard: guard,
+          body: body,
+          location: loc
+        }
+      }
+
+      rule parse_rule_trigger() -> RuleTrigger {
+        match peek().type {
+          TokenType::SIGNAL => {
+            advance()
+            expect(TokenType::LPAREN, "Expected '(' after 'signal'")
+
+            let freq_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
+            let frequency = freq_tok.value
+
+            let binding = ""
+            if match_token(TokenType::COMMA) {
+              let binding_tok = expect(TokenType::IDENTIFIER, "Expected binding name")
+              binding = binding_tok.value
+              state.current_binding = binding
+            }
+
+            expect(TokenType::RPAREN, "Expected ')' to close signal pattern")
+
+            return RuleTrigger::Signal(SignalMatch {
+              frequency: frequency,
+              binding: binding,
+              location: current_location()
+            })
+          }
+          TokenType::REST => {
+            advance()
+            return RuleTrigger::Rest
+          }
+          TokenType::CYCLE => {
+            advance()
+            let num_tok = expect(TokenType::NUMBER, "Expected cycle number")
+            let num = parse_i64(num_tok.value)
+            return RuleTrigger::Cycle(num as u32)
+          }
+          _ => {
+            error("Expected 'signal', 'rest', or 'cycle'", TokenType::SIGNAL)
+            return RuleTrigger::Rest
+          }
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # TOPOLOGY PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_topology_item() -> TopologyItem {
+        match peek().type {
+          TokenType::SPAWN => {
+            return TopologyItem::Spawn(parse_spawn_def())
+          }
+          TokenType::SOCKET => {
+            return TopologyItem::Socket(parse_socket_def())
+          }
+          TokenType::FRUITING_BODY => {
+            return TopologyItem::FruitingBody(parse_fruiting_body_def())
+          }
+          _ => {
+            error("Expected 'spawn', 'socket', or 'fruiting_body'", TokenType::SPAWN)
+            advance()
+            return TopologyItem::FruitingBody(FruitingBodyDef { name: "", location: current_location() })
+          }
+        }
+      }
+
+      rule parse_spawn_def() -> SpawnDef {
+        let loc = current_location()
+        expect(TokenType::SPAWN, "Expected 'spawn'")
+
+        let hyphal_tok = expect(TokenType::IDENTIFIER, "Expected hyphal name")
+        expect(TokenType::AS, "Expected 'as'")  # "as" keyword
+        let instance_tok = expect(TokenType::IDENTIFIER, "Expected instance name")
+
+        return SpawnDef {
+          hyphal: hyphal_tok.value,
+          instance: instance_tok.value,
+          location: loc
+        }
+      }
+
+      rule parse_socket_def() -> SocketDef {
+        let loc = current_location()
+        expect(TokenType::SOCKET, "Expected 'socket'")
+
+        let from_tok = expect(TokenType::IDENTIFIER, "Expected source name")
+        expect(TokenType::ARROW, "Expected '->' in socket definition")
+        let to_tok = expect(TokenType::IDENTIFIER, "Expected destination name")
+
+        let frequency = ""
+        if match_token(TokenType::LPAREN) {
+          # Accept either FREQUENCY keyword or IDENTIFIER for the option name
+          if !match_token(TokenType::FREQUENCY) {
+            expect(TokenType::IDENTIFIER, "Expected 'frequency'")
+          }
+          expect(TokenType::COLON, "Expected ':' after 'frequency'")
+          let freq_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
+          frequency = freq_tok.value
+          expect(TokenType::RPAREN, "Expected ')' to close socket options")
+        }
+
+        return SocketDef {
+          from: from_tok.value,
+          to: to_tok.value,
+          frequency: frequency,
+          location: loc
+        }
+      }
+
+      rule parse_fruiting_body_def() -> FruitingBodyDef {
+        let loc = current_location()
+        expect(TokenType::FRUITING_BODY, "Expected 'fruiting_body'")
+
+        let name_tok = expect(TokenType::IDENTIFIER, "Expected fruiting body name")
+
+        return FruitingBodyDef {
+          name: name_tok.value,
+          location: loc
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # IMPORT PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_import_def() -> ImportDef {
+        let loc = current_location()
+        expect(TokenType::IMPORT, "Expected 'import'")
+
+        let path_tok = expect(TokenType::IDENTIFIER, "Expected import path")
+
+        return ImportDef {
+          path: path_tok.value,
+          location: loc
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # STATEMENT PARSING
+      # -------------------------------------------------------------------------
+
+      rule parse_statement_list() -> vec<Statement> {
+        let statements: vec<Statement> = vec_new()
+
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          let stmt = parse_statement()
+          if stmt != Statement::None {
+            vec_push(statements, stmt)
+          }
+
+          # Optionally consume semicolon as statement terminator
+          match_token(TokenType::SEMICOLON)
+
+          if state.panic_mode {
+            synchronize()
+          }
+        }
+
+        return statements
+      }
+
+      rule parse_statement() -> Statement {
+        match peek().type {
+          TokenType::LET => {
+            return Statement::Let(parse_let_statement())
+          }
+          TokenType::IF => {
+            return Statement::Conditional(parse_conditional_statement())
+          }
+          TokenType::EMIT => {
+            return Statement::Emit(parse_emit_statement())
+          }
+          TokenType::REPORT => {
+            return Statement::Report(parse_report_statement())
+          }
+          TokenType::SPAWN => {
+            return Statement::Spawn(parse_spawn_statement())
+          }
+          TokenType::DIE => {
+            return Statement::Die(parse_die_statement())
+          }
+          TokenType::FOR => {
+            return Statement::ForLoop(parse_for_statement())
+          }
+          TokenType::WHILE => {
+            return Statement::WhileLoop(parse_while_statement())
+          }
+          TokenType::RETURN => {
+            return Statement::Return(parse_return_statement())
+          }
+          TokenType::BREAK => {
+            return Statement::Break(parse_break_statement())
+          }
+          TokenType::CONTINUE => {
+            return Statement::Continue(parse_continue_statement())
+          }
+          TokenType::MATCH => {
+            return Statement::Match(parse_match_statement())
+          }
+          TokenType::IDENTIFIER => {
+            # Could be assignment or expression statement
+            return parse_assignment_or_expression()
+          }
+          TokenType::STATE => {
+            # State assignment: state.field = value
+            return parse_assignment_or_expression()
+          }
+          _ => {
+            # Check if this is an identifier-like token (could be assignment)
+            if is_identifier_like() {
+              return parse_assignment_or_expression()
+            }
+            # Try to parse as expression statement
+            let expr = parse_expression()
+            if expr != Expression::None {
+              return Statement::Expression(ExpressionStatement {
+                expression: expr,
+                location: current_location()
+              })
+            }
+            return Statement::None
+          }
+        }
+      }
+
+      # Helper: check if current token can be used as an identifier (includes keywords)
+      rule is_identifier_like() -> boolean {
+        let t = peek().type
+        # Allow IDENTIFIER and contextual keywords that can be used as names
+        if t == TokenType::IDENTIFIER { return true }
+        if t == TokenType::FREQUENCIES { return true }
+        if t == TokenType::FREQUENCY { return true }
+        if t == TokenType::HYPHAE { return true }
+        if t == TokenType::HYPHAL { return true }
+        if t == TokenType::TOPOLOGY { return true }
+        if t == TokenType::CONFIG { return true }
+        if t == TokenType::CONSTANTS { return true }
+        if t == TokenType::TYPES { return true }
+        if t == TokenType::SIGNAL { return true }
+        if t == TokenType::STATE { return true }
+        if t == TokenType::RULE { return true }
+        if t == TokenType::ON { return true }
+        if t == TokenType::EMIT { return true }
+        if t == TokenType::REPORT { return true }
+        if t == TokenType::NETWORK { return true }
+        if t == TokenType::REST { return true }
+        if t == TokenType::CYCLE { return true }
+        if t == TokenType::SPAWN { return true }
+        if t == TokenType::DIE { return true }
+        if t == TokenType::SOCKET { return true }
+        if t == TokenType::IMPORT { return true }
+        if t == TokenType::WHERE { return true }
+        return false
+      }
+
+      # Helper: check if a token type is identifier-like
+      rule is_token_identifier_like(t: TokenType) -> boolean {
+        if t == TokenType::IDENTIFIER { return true }
+        if t == TokenType::FREQUENCIES { return true }
+        if t == TokenType::FREQUENCY { return true }
+        if t == TokenType::HYPHAE { return true }
+        if t == TokenType::HYPHAL { return true }
+        if t == TokenType::TOPOLOGY { return true }
+        if t == TokenType::CONFIG { return true }
+        if t == TokenType::CONSTANTS { return true }
+        if t == TokenType::TYPES { return true }
+        if t == TokenType::SIGNAL { return true }
+        if t == TokenType::STATE { return true }
+        if t == TokenType::RULE { return true }
+        if t == TokenType::ON { return true }
+        if t == TokenType::EMIT { return true }
+        if t == TokenType::REPORT { return true }
+        if t == TokenType::NETWORK { return true }
+        if t == TokenType::REST { return true }
+        if t == TokenType::CYCLE { return true }
+        if t == TokenType::SPAWN { return true }
+        if t == TokenType::DIE { return true }
+        if t == TokenType::SOCKET { return true }
+        if t == TokenType::IMPORT { return true }
+        if t == TokenType::WHERE { return true }
+        return false
+      }
+
+      rule parse_let_statement() -> LetStatement {
+        let loc = current_location()
+        expect(TokenType::LET, "Expected 'let'")
+
+        # Accept identifier or contextual keywords as variable names
+        let name_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+        if is_identifier_like() {
+          name_tok = advance()
+        } else {
+          error("Expected variable name", TokenType::IDENTIFIER)
+          name_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+        }
+
+        # Optional type annotation
+        let type_annotation = TypeRef::None
+        if match_token(TokenType::COLON) {
+          type_annotation = parse_type_ref()
+        }
+
+        expect(TokenType::ASSIGN, "Expected '=' after variable name")
+        let value = parse_expression()
+
+        return LetStatement {
+          name: name_tok.value,
+          type_annotation: type_annotation,
+          value: value,
+          location: loc
+        }
+      }
+
+      rule parse_conditional_statement() -> ConditionalStatement {
+        let loc = current_location()
+        expect(TokenType::IF, "Expected 'if'")
+
+        let condition = parse_expression()
+        expect(TokenType::LBRACE, "Expected '{' after condition")
+        let then_body = parse_statement_list()
+        expect(TokenType::RBRACE, "Expected '}' to close then branch")
+
+        let else_body: vec<Statement> = vec_new()
+        if match_token(TokenType::ELSE) {
+          if check(TokenType::IF) {
+            # else if
+            let nested = parse_conditional_statement()
+            vec_push(else_body, Statement::Conditional(nested))
+          } else {
+            expect(TokenType::LBRACE, "Expected '{' after 'else'")
+            else_body = parse_statement_list()
+            expect(TokenType::RBRACE, "Expected '}' to close else branch")
+          }
+        }
+
+        return ConditionalStatement {
+          condition: condition,
+          then_body: then_body,
+          else_body: else_body,
+          location: loc
+        }
+      }
+
+      rule parse_emit_statement() -> EmitStatement {
+        let loc = current_location()
+        expect(TokenType::EMIT, "Expected 'emit'")
+
+        let freq_tok = expect(TokenType::IDENTIFIER, "Expected frequency name")
+        expect(TokenType::LBRACE, "Expected '{' after frequency name")
+
+        let fields: vec<FieldInit> = vec_new()
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          vec_push(fields, parse_field_init())
+          if !check(TokenType::RBRACE) {
+            match_token(TokenType::COMMA)  # Optional comma
+          }
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close emit")
+
+        return EmitStatement {
+          frequency: freq_tok.value,
+          fields: fields,
+          location: loc
+        }
+      }
+
+      rule parse_field_init() -> FieldInit {
+        let loc = current_location()
+
+        # Accept identifier or contextual keywords as field names
+        let name_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+        if is_identifier_like() {
+          name_tok = advance()
+        } else {
+          error("Expected field name", TokenType::IDENTIFIER)
+          name_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+        }
+
+        expect(TokenType::COLON, "Expected ':' after field name")
+        let value = parse_expression()
+
+        return FieldInit {
+          name: name_tok.value,
+          value: value,
+          location: loc
+        }
+      }
+
+      rule parse_report_statement() -> ReportStatement {
+        let loc = current_location()
+        expect(TokenType::REPORT, "Expected 'report'")
+
+        let metric_tok = expect(TokenType::IDENTIFIER, "Expected metric name")
+
+        # Check if next token is : (old syntax) or { (struct syntax)
+        if check(TokenType::COLON) {
+          # Old syntax: report metric: value
+          advance()
+          let value = parse_expression()
+          return ReportStatement {
+            metric: metric_tok.value,
+            value: value,
+            location: loc
+          }
+        } else if check(TokenType::LBRACE) {
+          # Struct syntax: report status { field: value, ... }
+          advance()
+          let fields: vec<FieldInit> = vec_new()
+          while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+            vec_push(fields, parse_field_init())
+            if !check(TokenType::RBRACE) {
+              match_token(TokenType::COMMA)
+            }
+          }
+          expect(TokenType::RBRACE, "Expected '}' to close report")
+
+          return ReportStatement {
+            metric: metric_tok.value,
+            value: Expression::StructLiteral(StructLiteralExpr {
+              type_name: metric_tok.value,
+              fields: fields,
+              location: loc
+            }),
+            location: loc
+          }
+        } else {
+          error("Expected ':' or '{' after report metric name", TokenType::COLON)
+          return ReportStatement {
+            metric: metric_tok.value,
+            value: Expression::None,
+            location: loc
+          }
+        }
+      }
+
+      rule parse_spawn_statement() -> SpawnStatement {
+        let loc = current_location()
+        expect(TokenType::SPAWN, "Expected 'spawn'")
+
+        let hyphal_tok = expect(TokenType::IDENTIFIER, "Expected hyphal name")
+        expect(TokenType::IDENTIFIER, "Expected 'as'")  # "as" keyword
+        let instance_tok = expect(TokenType::IDENTIFIER, "Expected instance name")
+
+        return SpawnStatement {
+          hyphal: hyphal_tok.value,
+          instance: instance_tok.value,
+          location: loc
+        }
+      }
+
+      rule parse_die_statement() -> DieStatement {
+        let loc = current_location()
+        expect(TokenType::DIE, "Expected 'die'")
+        return DieStatement { location: loc }
+      }
+
+      rule parse_for_statement() -> ForLoopStatement {
+        let loc = current_location()
+        expect(TokenType::FOR, "Expected 'for'")
+
+        # Accept identifier or contextual keywords as variable names
+        let var_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+        if is_identifier_like() {
+          var_tok = advance()
+        } else {
+          error("Expected loop variable name", TokenType::IDENTIFIER)
+          var_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+        }
+        let variable = var_tok.value
+
+        # Optional type annotation for first variable
+        let variable_type = TypeRef::None
+        if match_token(TokenType::COLON) {
+          variable_type = parse_type_ref()
+        }
+
+        # Check for tuple destructuring: for var1, var2 in ... or for var1: T1, var2: T2 in ...
+        let variable2 = ""
+        if match_token(TokenType::COMMA) {
+          if is_identifier_like() {
+            let var2_tok = advance()
+            variable2 = var2_tok.value
+            # Optional type annotation for second variable (ignored for now, we just skip it)
+            if match_token(TokenType::COLON) {
+              parse_type_ref()  # consume and discard
+            }
+          } else {
+            error("Expected second loop variable name", TokenType::IDENTIFIER)
+          }
+        }
+
+        expect(TokenType::IN, "Expected 'in' after loop variable")
+
+        let iterable = parse_expression()
+
+        expect(TokenType::LBRACE, "Expected '{' after for loop header")
+        let body = parse_statement_list()
+        expect(TokenType::RBRACE, "Expected '}' to close for loop")
+
+        return ForLoopStatement {
+          variable: variable,
+          variable2: variable2,
+          variable_type: variable_type,
+          iterable: iterable,
+          body: body,
+          location: loc
+        }
+      }
+
+      rule parse_while_statement() -> WhileLoopStatement {
+        let loc = current_location()
+        expect(TokenType::WHILE, "Expected 'while'")
+
+        let condition = parse_expression()
+
+        expect(TokenType::LBRACE, "Expected '{' after while condition")
+        let body = parse_statement_list()
+        expect(TokenType::RBRACE, "Expected '}' to close while loop")
+
+        return WhileLoopStatement {
+          condition: condition,
+          body: body,
+          location: loc
+        }
+      }
+
+      rule parse_return_statement() -> ReturnStatement {
+        let loc = current_location()
+        expect(TokenType::RETURN, "Expected 'return'")
+
+        # Return value is optional - check if there's an expression before }
+        let value = Expression::None
+        if !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          value = parse_expression()
+        }
+
+        return ReturnStatement {
+          value: value,
+          location: loc
+        }
+      }
+
+      rule parse_break_statement() -> BreakStatement {
+        let loc = current_location()
+        expect(TokenType::BREAK, "Expected 'break'")
+        return BreakStatement { location: loc }
+      }
+
+      rule parse_continue_statement() -> ContinueStatement {
+        let loc = current_location()
+        expect(TokenType::CONTINUE, "Expected 'continue'")
+        return ContinueStatement { location: loc }
+      }
+
+      rule parse_match_statement() -> MatchStatement {
+        let loc = current_location()
+        expect(TokenType::MATCH, "Expected 'match'")
+
+        let subject = parse_expression()
+
+        expect(TokenType::LBRACE, "Expected '{' after match expression")
+
+        let arms: vec<MatchArm> = vec_new()
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          vec_push(arms, parse_match_arm())
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close match")
+
+        return MatchStatement {
+          subject: subject,
+          arms: arms,
+          location: loc
+        }
+      }
+
+      rule parse_match_arm() -> MatchArm {
+        let loc = current_location()
+
+        let pattern = parse_pattern()
+
+        expect(TokenType::FAT_ARROW, "Expected '=>' after pattern")
+
+        # Check if block-style or expression-style match arm
+        let body: vec<Statement> = vec_new()
+        if check(TokenType::LBRACE) {
+          # Block style: pattern => { statements }
+          advance()  # consume '{'
+          body = parse_statement_list()
+          expect(TokenType::RBRACE, "Expected '}' to close match arm")
+        } else {
+          # Expression style: pattern => expression
+          let expr = parse_expression()
+          vec_push(body, Statement::Expression(ExpressionStatement {
+            expression: expr,
+            location: loc
+          }))
+        }
+
+        return MatchArm {
+          pattern: pattern,
+          body: body,
+          location: loc
+        }
+      }
+
+      rule parse_pattern() -> Pattern {
+        # Parse patterns: identifier, Type::Variant(binding), literal, _, or pat1 | pat2
+        let first_pattern = parse_single_pattern()
+
+        # Check for OR patterns: pat1 | pat2 | pat3
+        if check(TokenType::PIPE) {
+          let patterns: vec<Pattern> = vec_new()
+          vec_push(patterns, first_pattern)
+          while match_token(TokenType::PIPE) {
+            vec_push(patterns, parse_single_pattern())
+          }
+          return Pattern::Or(patterns)
+        }
+
+        return first_pattern
+      }
+
+      rule parse_single_pattern() -> Pattern {
+        # Tuple pattern: (pat1, pat2, ...)
+        if check(TokenType::LPAREN) {
+          advance()  # consume '('
+          let elements: vec<Pattern> = vec_new()
+          while !check(TokenType::RPAREN) && !check(TokenType::EOF) {
+            vec_push(elements, parse_pattern())
+            if !check(TokenType::RPAREN) {
+              expect(TokenType::COMMA, "Expected ',' between tuple pattern elements")
+            }
+          }
+          expect(TokenType::RPAREN, "Expected ')' to close tuple pattern")
+          return Pattern::Tuple(TuplePattern { elements: elements })
+        }
+
+        # Wildcard pattern: _
+        if check(TokenType::IDENTIFIER) && peek().value == "_" {
+          advance()
+          return Pattern::Wildcard
+        }
+
+        # Literal patterns
+        if check(TokenType::NUMBER) {
+          let tok = advance()
+          let num = parse_i64(tok.value)
+          return Pattern::Literal(LiteralPattern { value: Literal::Number(num) })
+        }
+
+        if check(TokenType::STRING_LIT) {
+          let tok = advance()
+          return Pattern::Literal(LiteralPattern { value: Literal::String(tok.value) })
+        }
+
+        if check(TokenType::TRUE) {
+          advance()
+          return Pattern::Literal(LiteralPattern { value: Literal::Bool(true) })
+        }
+
+        if check(TokenType::FALSE) {
+          advance()
+          return Pattern::Literal(LiteralPattern { value: Literal::Bool(false) })
+        }
+
+        # Identifier or Enum::Variant pattern
+        if is_identifier_like() {
+          let name_tok = advance()
+          let name = name_tok.value
+
+          # Check for enum variant: Type::Variant or Type::Variant(binding)
+          if check(TokenType::DOUBLE_COLON) {
+            advance()
+            let variant_tok = expect(TokenType::IDENTIFIER, "Expected variant name")
+            let variant = variant_tok.value
+            let bindings: vec<string> = vec_new()
+
+            # Optional bindings: Type::Variant(binding1, binding2)
+            if match_token(TokenType::LPAREN) {
+              while !check(TokenType::RPAREN) && !check(TokenType::EOF) {
+                if is_identifier_like() {
+                  let binding_tok = advance()
+                  vec_push(bindings, binding_tok.value)
+                } else {
+                  break
+                }
+                if !check(TokenType::RPAREN) {
+                  match_token(TokenType::COMMA)
+                }
+              }
+              expect(TokenType::RPAREN, "Expected ')' after bindings")
+            }
+
+            return Pattern::EnumVariant(EnumVariantPattern {
+              enum_type: name,
+              variant: variant,
+              bindings: bindings
+            })
+          }
+
+          # Simple identifier pattern
+          return Pattern::Identifier(name)
+        }
+
+        # Fallback: wildcard
+        error("Expected pattern", TokenType::IDENTIFIER)
+        return Pattern::Wildcard
+      }
+
+      rule parse_assignment_or_expression() -> Statement {
+        let loc = current_location()
+
+        # Look ahead to determine if this is an assignment
+        let expr = parse_expression()
+
+        if match_token(TokenType::ASSIGN) {
+          # This is an assignment
+          let target = expression_to_assignment_target(expr)
+          let value = parse_expression()
+
+          return Statement::Assignment(AssignmentStatement {
+            target: target,
+            value: value,
+            location: loc
+          })
+        }
+
+        # Expression statement
+        return Statement::Expression(ExpressionStatement {
+          expression: expr,
+          location: loc
+        })
+      }
+
+      rule expression_to_assignment_target(expr: Expression) -> AssignmentTarget {
+        match expr {
+          Expression::Identifier(id) => {
+            return AssignmentTarget::Variable(id.name)
+          }
+          Expression::StateAccess(sa) => {
+            return AssignmentTarget::StateField(sa.field)
+          }
+          Expression::FieldAccess(fa) => {
+            return AssignmentTarget::FieldAccess(fa.object, fa.field)
+          }
+          Expression::IndexAccess(ia) => {
+            return AssignmentTarget::IndexAccess(ia.object, ia.index)
+          }
+          _ => {
+            error("Invalid assignment target", TokenType::IDENTIFIER)
+            return AssignmentTarget::Variable("")
+          }
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # EXPRESSION PARSING (Precedence Climbing)
+      # -------------------------------------------------------------------------
+
+      rule parse_expression() -> Expression {
+        # Check for if-expression: if condition { then } else { else }
+        if check(TokenType::IF) {
+          return parse_if_expression()
+        }
+        # Check for match-expression: match expr { arms }
+        if check(TokenType::MATCH) {
+          return parse_match_expression()
+        }
+        let expr = parse_logical_or()
+
+        # Check for cast expression: expr as Type
+        if match_token(TokenType::AS) {
+          let loc = current_location()
+          let target_type = parse_type_ref()
+          return Expression::Cast(CastExpr {
+            expr: expr,
+            target_type: target_type,
+            location: loc
+          })
+        }
+
+        return expr
+      }
+
+      rule parse_if_expression() -> Expression {
+        let loc = current_location()
+        expect(TokenType::IF, "Expected 'if'")
+
+        let condition = parse_logical_or()
+
+        expect(TokenType::LBRACE, "Expected '{' after if condition")
+        let then_expr = parse_expression()
+        expect(TokenType::RBRACE, "Expected '}' after then expression")
+
+        expect(TokenType::ELSE, "Expected 'else' in if-expression")
+
+        expect(TokenType::LBRACE, "Expected '{' after else")
+        let else_expr = parse_expression()
+        expect(TokenType::RBRACE, "Expected '}' after else expression")
+
+        return Expression::IfExpr(IfExpression {
+          condition: condition,
+          then_expr: then_expr,
+          else_expr: else_expr,
+          location: loc
+        })
+      }
+
+      rule parse_match_expression() -> Expression {
+        let loc = current_location()
+        expect(TokenType::MATCH, "Expected 'match'")
+
+        let subject = parse_expression()
+
+        expect(TokenType::LBRACE, "Expected '{' after match expression")
+
+        let arms: vec<MatchArm> = vec_new()
+        while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+          vec_push(arms, parse_match_arm())
+
+          # Optionally consume comma between arms
+          match_token(TokenType::COMMA)
+        }
+
+        expect(TokenType::RBRACE, "Expected '}' to close match expression")
+
+        return Expression::MatchExpr(MatchExpression {
+          subject: subject,
+          arms: arms,
+          location: loc
+        })
+      }
+
+      # Precedence level 1: || (lowest)
+      rule parse_logical_or() -> Expression {
+        let loc = current_location()
+        let left = parse_logical_and()
+
+        while match_token(TokenType::OR) {
+          let right = parse_logical_and()
+          left = Expression::BinaryOp(BinaryOpExpr {
+            op: BinaryOperator::Or,
+            left: left,
+            right: right,
+            location: loc
+          })
+        }
+
+        return left
+      }
+
+      # Precedence level 2: &&
+      rule parse_logical_and() -> Expression {
+        let loc = current_location()
+        let left = parse_bitwise_or()
+
+        while match_token(TokenType::AND) {
+          let right = parse_bitwise_or()
+          left = Expression::BinaryOp(BinaryOpExpr {
+            op: BinaryOperator::And,
+            left: left,
+            right: right,
+            location: loc
+          })
+        }
+
+        return left
+      }
+
+      # Precedence level 3: | (bitwise OR)
+      rule parse_bitwise_or() -> Expression {
+        let loc = current_location()
+        let left = parse_bitwise_and()
+
+        while match_token(TokenType::PIPE) {
+          let right = parse_bitwise_and()
+          left = Expression::BinaryOp(BinaryOpExpr {
+            op: BinaryOperator::BitOr,
+            left: left,
+            right: right,
+            location: loc
+          })
+        }
+
+        return left
+      }
+
+      # Precedence level 4: & (bitwise AND)
+      rule parse_bitwise_and() -> Expression {
+        let loc = current_location()
+        let left = parse_equality()
+
+        while match_token(TokenType::AMPERSAND) {
+          let right = parse_equality()
+          left = Expression::BinaryOp(BinaryOpExpr {
+            op: BinaryOperator::BitAnd,
+            left: left,
+            right: right,
+            location: loc
+          })
+        }
+
+        return left
+      }
+
+      # Precedence level 5: == !=
+      rule parse_equality() -> Expression {
+        let loc = current_location()
+        let left = parse_relational()
+
+        while true {
+          if match_token(TokenType::EQ) {
+            let right = parse_relational()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Eq,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::NE) {
+            let right = parse_relational()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Ne,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else {
+            break
+          }
+        }
+
+        return left
+      }
+
+      # Precedence level 4: < > <= >=
+      rule parse_relational() -> Expression {
+        let loc = current_location()
+        let left = parse_range()
+
+        while true {
+          if match_token(TokenType::LT) {
+            let right = parse_range()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Lt,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::GT) {
+            let right = parse_range()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Gt,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::LE) {
+            let right = parse_range()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Le,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::GE) {
+            let right = parse_range()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Ge,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else {
+            break
+          }
+        }
+
+        return left
+      }
+
+      # Precedence level 4.5: .. (range)
+      rule parse_range() -> Expression {
+        let loc = current_location()
+        let left = parse_shift()
+
+        # Check for range operator ..
+        if match_token(TokenType::DOTDOT) {
+          let right = parse_shift()
+          return Expression::Range(RangeExpr {
+            start: left,
+            end: right,
+            location: loc
+          })
+        }
+
+        return left
+      }
+
+      # Precedence level 4.75: << >> (shift)
+      rule parse_shift() -> Expression {
+        let loc = current_location()
+        let left = parse_additive()
+
+        while true {
+          if match_token(TokenType::SHIFT_LEFT) {
+            let right = parse_additive()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Shl,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::SHIFT_RIGHT) {
+            let right = parse_additive()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Shr,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else {
+            break
+          }
+        }
+
+        return left
+      }
+
+      # Precedence level 5: + -
+      rule parse_additive() -> Expression {
+        let loc = current_location()
+        let left = parse_multiplicative()
+
+        while true {
+          if match_token(TokenType::PLUS) {
+            let right = parse_multiplicative()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Add,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::MINUS) {
+            let right = parse_multiplicative()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Sub,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else {
+            break
+          }
+        }
+
+        return left
+      }
+
+      # Precedence level 6: * / %
+      rule parse_multiplicative() -> Expression {
+        let loc = current_location()
+        let left = parse_unary()
+
+        while true {
+          if match_token(TokenType::STAR) {
+            let right = parse_unary()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Mul,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::SLASH) {
+            let right = parse_unary()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Div,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else if match_token(TokenType::PERCENT) {
+            let right = parse_unary()
+            left = Expression::BinaryOp(BinaryOpExpr {
+              op: BinaryOperator::Mod,
+              left: left,
+              right: right,
+              location: loc
+            })
+          } else {
+            break
+          }
+        }
+
+        return left
+      }
+
+      # Precedence level 7: ! - + (unary)
+      rule parse_unary() -> Expression {
+        let loc = current_location()
+
+        if match_token(TokenType::NOT) {
+          let operand = parse_unary()
+          return Expression::UnaryOp(UnaryOpExpr {
+            op: UnaryOperator::Not,
+            operand: operand,
+            location: loc
+          })
+        }
+
+        if match_token(TokenType::MINUS) {
+          let operand = parse_unary()
+          return Expression::UnaryOp(UnaryOpExpr {
+            op: UnaryOperator::Neg,
+            operand: operand,
+            location: loc
+          })
+        }
+
+        if match_token(TokenType::PLUS) {
+          let operand = parse_unary()
+          return Expression::UnaryOp(UnaryOpExpr {
+            op: UnaryOperator::Pos,
+            operand: operand,
+            location: loc
+          })
+        }
+
+        return parse_postfix()
+      }
+
+      # Precedence level 8: postfix (. [] () - highest)
+      rule parse_postfix() -> Expression {
+        let expr = parse_primary()
+
+        while true {
+          if match_token(TokenType::DOT) {
+            let loc = current_location()
+            # Accept identifier or contextual keywords as field names
+            let field_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+            if is_identifier_like() {
+              field_tok = advance()
+            } else {
+              error("Expected field name after '.'", TokenType::IDENTIFIER)
+              field_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+            }
+
+            # Check if it's a method call
+            if check(TokenType::LPAREN) {
+              advance()
+              let args = parse_argument_list()
+              expect(TokenType::RPAREN, "Expected ')' after method arguments")
+
+              expr = Expression::MethodCall(MethodCallExpr {
+                object: expr,
+                method: field_tok.value,
+                args: args,
+                location: loc
+              })
+            } else {
+              expr = Expression::FieldAccess(FieldAccessExpr {
+                object: expr,
+                field: field_tok.value,
+                location: loc
+              })
+            }
+          } else if match_token(TokenType::LBRACKET) {
+            let loc = current_location()
+            let index = parse_expression()
+            expect(TokenType::RBRACKET, "Expected ']' after index")
+
+            expr = Expression::IndexAccess(IndexAccessExpr {
+              object: expr,
+              index: index,
+              location: loc
+            })
+          } else if match_token(TokenType::LPAREN) {
+            # Function call on identifier
+            match expr {
+              Expression::Identifier(id) => {
+                let loc = id.location
+                let args = parse_argument_list()
+                expect(TokenType::RPAREN, "Expected ')' after arguments")
+
+                expr = Expression::Call(CallExpr {
+                  name: id.name,
+                  args: args,
+                  location: loc
+                })
+              }
+              _ => {
+                error("Expected function name", TokenType::IDENTIFIER)
+              }
+            }
+          } else {
+            break
+          }
+        }
+
+        return expr
+      }
+
+      rule parse_argument_list() -> vec<Expression> {
+        let args: vec<Expression> = vec_new()
+
+        if !check(TokenType::RPAREN) {
+          vec_push(args, parse_expression())
+
+          while match_token(TokenType::COMMA) {
+            vec_push(args, parse_expression())
+          }
+        }
+
+        return args
+      }
+
+      # Primary expressions (literals, identifiers, grouped)
+      rule parse_primary() -> Expression {
+        let loc = current_location()
+        let tok = peek()
+
+        match tok.type {
+          TokenType::NUMBER => {
+            advance()
+            let value = parse_number(tok.value)
+            return Expression::Literal(LiteralExpr {
+              value: value,
+              location: loc
+            })
+          }
+          TokenType::STRING_LIT => {
+            advance()
+            return Expression::Literal(LiteralExpr {
+              value: Literal::String(tok.value),
+              location: loc
+            })
+          }
+          TokenType::TRUE => {
+            advance()
+            return Expression::Literal(LiteralExpr {
+              value: Literal::Bool(true),
+              location: loc
+            })
+          }
+          TokenType::FALSE => {
+            advance()
+            return Expression::Literal(LiteralExpr {
+              value: Literal::Bool(false),
+              location: loc
+            })
+          }
+          TokenType::IDENTIFIER => {
+            advance()
+
+            # Check for state access: state.field
+            if tok.value == "state" && check(TokenType::DOT) {
+              advance()  # consume '.'
+              # Accept identifier or keyword as field name
+              let field_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+              if is_identifier_like() {
+                field_tok = advance()
+              } else {
+                error("Expected field name after 'state.'", TokenType::IDENTIFIER)
+                field_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+              }
+              return Expression::StateAccess(StateAccessExpr {
+                field: field_tok.value,
+                location: loc
+              })
+            }
+
+            # Check for signal binding access
+            if tok.value == state.current_binding && check(TokenType::DOT) {
+              advance()  # consume '.'
+              # Accept identifier or keyword as field name
+              let field_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+              if is_identifier_like() {
+                field_tok = advance()
+              } else {
+                error("Expected field name", TokenType::IDENTIFIER)
+                field_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+              }
+              return Expression::SignalAccess(SignalAccessExpr {
+                binding: tok.value,
+                field: field_tok.value,
+                location: loc
+              })
+            }
+
+            # Check for struct literal: TypeName { field: value, ... }
+            # Only parse as struct literal if next tokens look like field init:
+            # either empty { } or { identifier-like : ... }
+            if check(TokenType::LBRACE) {
+              # Lookahead: check if this is really a struct literal
+              # A struct literal has either:
+              # - { } (empty)
+              # - { identifier-like : ... (field init)
+              let is_struct_literal = false
+              if peek_ahead(1).type == TokenType::RBRACE {
+                # Empty struct literal
+                is_struct_literal = true
+              } else if is_token_identifier_like(peek_ahead(1).type) && peek_ahead(2).type == TokenType::COLON {
+                # Field init pattern
+                is_struct_literal = true
+              }
+
+              if is_struct_literal {
+                advance()
+                let fields: vec<FieldInit> = vec_new()
+                while !check(TokenType::RBRACE) && !check(TokenType::EOF) {
+                  vec_push(fields, parse_field_init())
+                  if !check(TokenType::RBRACE) {
+                    match_token(TokenType::COMMA)
+                  }
+                }
+                expect(TokenType::RBRACE, "Expected '}' to close struct literal")
+
+                return Expression::StructLiteral(StructLiteralExpr {
+                  type_name: tok.value,
+                  fields: fields,
+                  location: loc
+                })
+              }
+            }
+
+            # Check for enum variant access: EnumType::Variant or EnumType::Variant(args...)
+            if check(TokenType::DOUBLE_COLON) {
+              advance()  # consume '::'
+              let variant_tok = expect(TokenType::IDENTIFIER, "Expected variant name after '::'")
+
+              # Check for variant data: EnumType::Variant(arg1, arg2, ...)
+              let data: vec<Expression> = vec_new()
+              if match_token(TokenType::LPAREN) {
+                data = parse_argument_list()
+                expect(TokenType::RPAREN, "Expected ')' after enum variant arguments")
+              }
+
+              return Expression::EnumVariant(EnumVariantExpr {
+                enum_type: tok.value,
+                variant: variant_tok.value,
+                data: data,
+                location: loc
+              })
+            }
+
+            return Expression::Identifier(IdentifierExpr {
+              name: tok.value,
+              location: loc
+            })
+          }
+          TokenType::LPAREN => {
+            advance()
+            let first = parse_expression()
+
+            # Check if this is a tuple (has comma) or grouped expression
+            if check(TokenType::COMMA) {
+              # Tuple expression: (expr1, expr2, ...)
+              let elements: vec<Expression> = vec_new()
+              vec_push(elements, first)
+              while match_token(TokenType::COMMA) {
+                if check(TokenType::RPAREN) {
+                  break  # Allow trailing comma
+                }
+                vec_push(elements, parse_expression())
+              }
+              expect(TokenType::RPAREN, "Expected ')' to close tuple")
+              return Expression::Tuple(TupleExpr {
+                elements: elements,
+                location: loc
+              })
+            }
+
+            # Grouped expression: (expr)
+            expect(TokenType::RPAREN, "Expected ')' after expression")
+            return Expression::Grouped(GroupedExpr {
+              inner: first,
+              location: loc
+            })
+          }
+          TokenType::LBRACKET => {
+            # List literal
+            advance()
+            let elements: vec<Expression> = vec_new()
+            while !check(TokenType::RBRACKET) && !check(TokenType::EOF) {
+              vec_push(elements, parse_expression())
+              if !check(TokenType::RBRACKET) {
+                expect(TokenType::COMMA, "Expected ',' between list elements")
+              }
+            }
+            expect(TokenType::RBRACKET, "Expected ']' to close list")
+
+            return Expression::ListLiteral(ListLiteralExpr {
+              elements: elements,
+              location: loc
+            })
+          }
+          TokenType::STATE => {
+            # State access: state.field
+            advance()
+            expect(TokenType::DOT, "Expected '.' after 'state'")
+            # Accept identifier or keyword as field name
+            let field_tok = Token { type: TokenType::EOF, value: "", line: 0, column: 0 }
+            if is_identifier_like() {
+              field_tok = advance()
+            } else {
+              error("Expected field name after 'state.'", TokenType::IDENTIFIER)
+              field_tok = Token { type: TokenType::IDENTIFIER, value: "_error", line: 0, column: 0 }
+            }
+            return Expression::StateAccess(StateAccessExpr {
+              field: field_tok.value,
+              location: loc
+            })
+          }
+          _ => {
+            # Handle identifier-like keywords as identifiers
+            if is_identifier_like() {
+              let kw_tok = advance()
+
+              # Check for enum variant access: EnumType::Variant
+              if check(TokenType::DOUBLE_COLON) {
+                advance()  # consume '::'
+                let variant_tok = expect(TokenType::IDENTIFIER, "Expected variant name after '::'")
+
+                # Check for variant data: EnumType::Variant(arg1, arg2, ...)
+                let data: vec<Expression> = vec_new()
+                if match_token(TokenType::LPAREN) {
+                  data = parse_argument_list()
+                  expect(TokenType::RPAREN, "Expected ')' after enum variant arguments")
+                }
+
+                return Expression::EnumVariant(EnumVariantExpr {
+                  enum_type: kw_tok.value,
+                  variant: variant_tok.value,
+                  data: data,
+                  location: loc
+                })
+              }
+
+              return Expression::Identifier(IdentifierExpr {
+                name: kw_tok.value,
+                location: loc
+              })
+            }
+
+            error("Expected expression", TokenType::IDENTIFIER)
+            return Expression::None
+          }
+        }
+      }
+
+      rule parse_number(s: string) -> Literal {
+        if string_contains(s, ".") {
+          return Literal::Float(parse_f64(s))
+        }
+        return Literal::Number(parse_i64(s))
+      }
+    }

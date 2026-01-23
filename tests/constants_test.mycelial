@@ -1,0 +1,25 @@
+# Test with constants block
+network constants_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  constants {
+    MY_ARRAY = [1, 2, 3, 4, 5]
+    MY_STRING = "hello"
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 1
+      }
+    }
+  }
+}

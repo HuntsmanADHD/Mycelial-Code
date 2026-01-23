@@ -1,0 +1,24 @@
+# Test rule with vec parameter and return type
+network vec_param_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 1
+      }
+
+      rule my_func(name: string, offset: u32, expected: vec<u8>, actual: vec<u8>) -> boolean {
+        return true
+      }
+    }
+  }
+}

@@ -1,0 +1,245 @@
+  frequencies {
+
+    # --------------------------------------------------------------------------
+    # 1.1 Compilation Control Signals
+    # --------------------------------------------------------------------------
+
+    # Initial startup signal (from fruiting body)
+    startup {
+      source_file: string       # Path to .mycelial source file
+      output_file: string       # Path for output ELF binary
+    }
+
+    # Request to compile a source file
+    compile_request {
+      source_file: string       # Path to .mycelial source file
+      output_file: string       # Path for output ELF binary
+    }
+
+    # Final compilation complete signal
+    compilation_complete {
+      output_file: string       # Path to generated binary
+      file_size: u64            # Size in bytes
+      success: boolean          # Overall success status
+    }
+
+    # Compilation error signal
+    compilation_error {
+      stage: string             # "lexer", "parser", "ir", "codegen", "assembler", "linker"
+      message: string           # Error description
+      line: u32                 # Source line (if applicable)
+      column: u32               # Source column (if applicable)
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.2 Lexer -> Parser Signals
+    # --------------------------------------------------------------------------
+
+    # Request to lex source code
+    lex_request {
+      source: string            # Source code to lex
+      filename: string          # Source filename
+    }
+
+    # Individual token from lexer
+    token {
+      type: TokenType           # Token type (NETWORK, IDENTIFIER, NUMBER, etc.)
+      value: string             # Token value as string
+      line: u32                 # Source line number
+      column: u32               # Source column number
+    }
+
+    # Lexer completion signal
+    lex_complete {
+      token_count: u32          # Total tokens emitted
+      error_count: u32          # Number of lexer errors
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.3 Parser -> IR Generator Signals
+    # --------------------------------------------------------------------------
+
+    # Individual AST node (for streaming if needed)
+    ast_node {
+      node_type: string         # AST node type
+      node_id: u32              # Unique node identifier
+      parent_id: u32            # Parent node ID (0 for root)
+      data: string              # JSON-encoded node data
+    }
+
+    # Complete AST (primary handoff to IR generator)
+    ast_complete {
+      items: vec<ProgramItem>   # Program items directly (bypassing Program struct)
+    }
+
+    # Parser error signal
+    parse_error {
+      message: string           # Error message
+      line: u32                 # Source line
+      column: u32               # Source column
+      expected: string          # Expected token/construct
+      found: string             # Actual token/construct
+    }
+
+    # Parser completion signal
+    parse_complete {
+      program_id: u32           # Program identifier
+      node_count: u32           # Total AST nodes
+      error_count: u32          # Number of parse errors
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.4 IR Generator -> Code Generator Signals
+    # --------------------------------------------------------------------------
+
+    # Individual IR instruction
+    ir_node {
+      instruction: IRInstruction  # The IR instruction to process
+    }
+
+    # Function boundary signals
+    ir_function_start {
+      name: string              # Function name
+      params: string            # JSON-encoded parameter list
+      return_type: string       # Return type (I8, I16, I32, I64, PTR, VOID)
+    }
+
+    ir_function_end {
+      name: string              # Function name
+    }
+
+    # LIR function (simplified - just name for now)
+    lir_function {
+      name: string              # Function name
+    }
+
+    # LIR struct definition
+    lir_struct {
+      name: string              # Struct name
+      fields: string            # JSON-encoded field list
+      total_size: u32           # Total struct size in bytes
+      alignment: u32            # Struct alignment
+    }
+
+    # IR generation complete
+    ir_complete {
+      instruction_count: u32    # Total IR instructions
+      function_count: u32       # Number of functions
+      struct_count: u32         # Number of structs
+      function_names_str: string  # Semicolon-delimited function names
+    }
+
+    # IR generation error
+    ir_error {
+      message: string           # Error message
+      location: string          # Source location info
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.5 Code Generator -> Assembler Signals
+    # --------------------------------------------------------------------------
+
+    # x86-64 assembly instruction
+    asm_instruction {
+      label: string             # Label for this instruction (optional)
+      mnemonic: string          # Instruction mnemonic (mov, add, etc.)
+      operands: string          # JSON-encoded operand list
+    }
+
+    # Data directive
+    asm_data {
+      label: string             # Data label
+      data_type: string         # "asciz", "quad", "byte", "align"
+      value: string             # Data value
+      section: string           # Target section (.text, .data, .rodata)
+    }
+
+    # Section directive
+    asm_section {
+      name: string              # Section name (.text, .rodata, .data, .bss)
+    }
+
+    # Code generation complete
+    codegen_complete {
+      instruction_count: u32    # Total assembly instructions
+      function_count: u32       # Number of functions generated
+    }
+
+    # Register allocation complete (internal)
+    allocation_complete {
+      function_name: string     # Function name
+      vreg_count: u32           # Number of virtual registers
+      spill_count: u32          # Number of spilled registers
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.6 Assembler -> Linker Signals
+    # --------------------------------------------------------------------------
+
+    # Encoded machine code bytes
+    machine_code {
+      section: string           # Section name (.text, .rodata, etc.)
+      offset: u32               # Offset within section
+      bytes: string             # Hex-encoded byte string
+    }
+
+    # Relocation entry
+    relocation {
+      section: string           # Section containing relocation
+      offset: u32               # Offset within section
+      symbol: string            # Symbol name
+      reloc_type: string        # R_X86_64_PC32, R_X86_64_64, etc.
+      addend: i64               # Addend value
+    }
+
+    # Symbol definition
+    symbol_def {
+      name: string              # Symbol name
+      section: string           # Section containing symbol
+      offset: u32               # Offset within section
+      is_global: boolean        # Global visibility
+    }
+
+    # Section metadata
+    section_info {
+      name: string              # Section name
+      size: u32                 # Section size in bytes
+      flags: u32                # Section flags (0x2, 0x4, etc.)
+    }
+
+    # Assembly complete
+    asm_complete {
+      total_bytes: u32          # Total machine code bytes
+      symbol_count: u32         # Number of symbols
+      relocation_count: u32     # Number of relocations
+    }
+
+    # Assembly error
+    asm_error {
+      message: string           # Error message
+      line: u32                 # Line number in assembly
+      instruction: string       # Problematic instruction
+    }
+
+    # --------------------------------------------------------------------------
+    # 1.7 Linker Output Signals
+    # --------------------------------------------------------------------------
+
+    # Linking complete
+    link_complete {
+      output_file: string       # Path to output binary
+      file_size: u64            # Binary size in bytes
+      entry_point: u64          # Entry point virtual address
+    }
+
+    # Linking error
+    link_error {
+      message: string           # Error message
+      symbol: string            # Problematic symbol (if applicable)
+    }
+
+    # ELF binary data (internal)
+    elf_binary {
+      bytes: string             # Hex-encoded ELF binary
+    }
+  }

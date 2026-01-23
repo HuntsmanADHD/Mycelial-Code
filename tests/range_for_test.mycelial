@@ -1,0 +1,23 @@
+# Test range-based for loop
+network range_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        sum: u32
+      }
+
+      on rest {
+        state.sum = 0
+        for i in 0..10 {
+          state.sum = state.sum + i
+        }
+      }
+    }
+  }
+}

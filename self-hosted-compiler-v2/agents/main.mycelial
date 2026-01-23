@@ -1,0 +1,57 @@
+    hyphal main {
+      state {
+        default_source: string
+        default_output: string
+      }
+
+      on rest {
+        state.default_source = "tests/hello_world.mycelial"
+        state.default_output = "hello"
+      }
+
+      # Startup signal - begin compilation
+      on signal(startup, s) {
+        report status { message: "" }
+        report status { message: "========================================" }
+        report status { message: "     MYCELIAL NATIVE COMPILER" }
+        report status { message: "========================================" }
+        report status { message: "" }
+
+        # Use provided files or defaults
+        let source = if s.source_file != "" { s.source_file } else { state.default_source }
+        let output = if s.output_file != "" { s.output_file } else { state.default_output }
+
+        emit compile_request {
+          source_file: source,
+          output_file: output
+        }
+      }
+
+      # Handle compilation complete
+      on signal(compilation_complete, cc) {
+        report status { message: "" }
+
+        if cc.success {
+          report status { message: "========================================" }
+          report status { message: "     COMPILATION SUCCESSFUL" }
+          report status { message: "========================================" }
+          report status { message: "" }
+          report status { message: format("Output: {} ({} bytes)", cc.output_file, cc.file_size) }
+          report status { message: "" }
+          report status { message: "To run:" }
+          report status { message: format("  chmod +x {}", cc.output_file) }
+          report status { message: format("  ./{}", cc.output_file) }
+        } else {
+          report status { message: "========================================" }
+          report status { message: "     COMPILATION FAILED" }
+          report status { message: "========================================" }
+        }
+
+        report status { message: "" }
+      }
+
+      # Handle compilation errors
+      on signal(compilation_error, err) {
+        report status { message: format("ERROR [{}] at {}:{}: {}", err.stage, err.line, err.column, err.message) }
+      }
+    }

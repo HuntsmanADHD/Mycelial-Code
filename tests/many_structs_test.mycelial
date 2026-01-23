@@ -1,0 +1,50 @@
+# Test with many struct literals (like codegen_test)
+network many_structs_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  types {
+    struct IRInstruction {
+      op: string
+      dst: string
+      src1: string
+      src2: string
+      type_size: u32
+      label: string
+    }
+  }
+
+  constants {
+    INSTRUCTIONS = [
+      IRInstruction { op: "BITCAST", dst: "%g", src1: "%signal_ptr", src2: "*Signal", type_size: 8, label: "bb0" },
+      IRInstruction { op: "GET_FIELD", dst: "%ptr", src1: "%g", src2: "4", type_size: 8, label: "" },
+      IRInstruction { op: "LOAD", dst: "%name", src1: "%ptr", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: "CONST", dst: "%temp", src1: ".L_temp", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: "CALL", dst: "%fmt", src1: "format", src2: "%temp", type_size: 8, label: "" },
+      IRInstruction { op: "CONST", dst: "%size", src1: "16", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: "CALL", dst: "%resp", src1: "alloc", src2: "%size", type_size: 8, label: "" },
+      IRInstruction { op: "GET_FIELD", dst: "%id", src1: "%resp", src2: "0", type_size: 8, label: "" },
+      IRInstruction { op: "CONST", dst: "%val", src1: "2", src2: "", type_size: 4, label: "" },
+      IRInstruction { op: "STORE", dst: "%id", src1: "%val", src2: "", type_size: 4, label: "" },
+      IRInstruction { op: "GET_FIELD", dst: "%msg", src1: "%resp", src2: "8", type_size: 8, label: "" },
+      IRInstruction { op: "STORE", dst: "%msg", src1: "%fmt", src2: "", type_size: 8, label: "" },
+      IRInstruction { op: "CALL", dst: "", src1: "emit", src2: "%resp", type_size: 0, label: "" },
+      IRInstruction { op: "RET", dst: "", src1: "", src2: "", type_size: 0, label: "" }
+    ]
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 1
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+# Test with signal handler binding syntax
+network signal_handler_test {
+  frequencies {
+    test_sig {
+      value: u32
+      name: string
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 0
+      }
+
+      on signal(test_sig, msg) {
+        state.x = msg.value
+      }
+    }
+  }
+}

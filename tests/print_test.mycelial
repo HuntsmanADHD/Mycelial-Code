@@ -1,0 +1,23 @@
+# Print test - verifies the compiler can produce output
+network print_test {
+  frequencies {
+    done {
+      message: string
+    }
+  }
+
+  hyphae {
+    hyphal Printer {
+      state {
+        count: u32
+      }
+
+      on rest {
+        state.count = 42
+        report status { message: "Hello from Mycelial!" }
+        report status { message: format("The answer is: {}", state.count) }
+        report status { message: "Compilation pipeline working!" }
+      }
+    }
+  }
+}

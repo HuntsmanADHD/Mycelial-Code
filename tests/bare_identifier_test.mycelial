@@ -1,0 +1,35 @@
+# Test with bare identifiers in struct literals
+network bare_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  types {
+    struct Instruction {
+      op: u32
+      dst: string
+    }
+  }
+
+  constants {
+    ITEMS = [
+      Instruction { op: BITCAST, dst: "%g" },
+      Instruction { op: LOAD, dst: "%x" },
+      Instruction { op: STORE, dst: "%y" }
+    ]
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 1
+      }
+    }
+  }
+}

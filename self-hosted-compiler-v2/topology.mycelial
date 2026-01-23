@@ -1,0 +1,103 @@
+  topology {
+    # External interfaces
+    fruiting_body input      # Receives startup signal with file paths
+    fruiting_body output     # Emits final compilation status
+
+    # Spawn all agents
+    spawn main as M1
+    spawn orchestrator as O1
+    spawn lexer as L1
+
+    # All compiler pipeline agents
+    spawn parser as P1
+    spawn ir_generator as IR1
+    spawn x86_codegen as CG1
+    spawn assembler as AS1
+    spawn linker as LK1
+
+    # Input to main
+    socket input -> M1 (frequency: startup)
+
+    # Main to orchestrator
+    socket M1 -> O1 (frequency: compile_request)
+
+    # Orchestrator to lexer
+    socket O1 -> L1 (frequency: lex_request)
+
+    # Lexer to orchestrator (tokens)
+    socket L1 -> O1 (frequency: token)
+    socket L1 -> O1 (frequency: lex_complete)
+
+    # Orchestrator forwards to parser
+    socket O1 -> P1 (frequency: token)
+    socket O1 -> P1 (frequency: lex_complete)
+
+    # Parser to orchestrator
+    socket P1 -> O1 (frequency: ast_node)
+    socket P1 -> O1 (frequency: ast_complete)
+    socket P1 -> O1 (frequency: parse_error)
+    socket P1 -> O1 (frequency: parse_complete)
+
+    # Direct AST to code generator (bypass IR layer for bootstrap)
+    socket P1 -> CG1 (frequency: ast_complete)
+
+    # Orchestrator forwards to IR generator
+    socket O1 -> IR1 (frequency: ast_complete)
+
+    # IR generator to orchestrator
+    socket IR1 -> O1 (frequency: ir_node)
+    socket IR1 -> O1 (frequency: ir_function_start)
+    socket IR1 -> O1 (frequency: ir_function_end)
+    socket IR1 -> O1 (frequency: lir_function)
+    socket IR1 -> O1 (frequency: lir_struct)
+    socket IR1 -> O1 (frequency: ir_complete)
+    socket IR1 -> O1 (frequency: ir_error)
+
+    # Direct from IR generator to code generator (bypass orchestrator forwarding issue)
+    socket IR1 -> CG1 (frequency: lir_function)
+
+    # Orchestrator forwards to code generator
+    socket O1 -> CG1 (frequency: ir_node)
+    socket O1 -> CG1 (frequency: ir_function_start)
+    socket O1 -> CG1 (frequency: ir_function_end)
+    socket O1 -> CG1 (frequency: lir_function)
+    socket O1 -> CG1 (frequency: ir_complete)
+
+    # Code generator to orchestrator
+    socket CG1 -> O1 (frequency: asm_instruction)
+    socket CG1 -> O1 (frequency: asm_data)
+    socket CG1 -> O1 (frequency: asm_section)
+    socket CG1 -> O1 (frequency: codegen_complete)
+
+    # Orchestrator forwards to assembler
+    socket O1 -> AS1 (frequency: asm_instruction)
+    socket O1 -> AS1 (frequency: asm_data)
+    socket O1 -> AS1 (frequency: asm_section)
+    socket O1 -> AS1 (frequency: codegen_complete)
+
+    # Assembler to orchestrator
+    socket AS1 -> O1 (frequency: machine_code)
+    socket AS1 -> O1 (frequency: relocation)
+    socket AS1 -> O1 (frequency: symbol_def)
+    socket AS1 -> O1 (frequency: section_info)
+    socket AS1 -> O1 (frequency: asm_complete)
+    socket AS1 -> O1 (frequency: asm_error)
+
+    # Orchestrator forwards to linker
+    socket O1 -> LK1 (frequency: machine_code)
+    socket O1 -> LK1 (frequency: relocation)
+    socket O1 -> LK1 (frequency: symbol_def)
+    socket O1 -> LK1 (frequency: section_info)
+    socket O1 -> LK1 (frequency: asm_complete)
+
+    # Linker to orchestrator
+    socket LK1 -> O1 (frequency: link_complete)
+    socket LK1 -> O1 (frequency: link_error)
+
+    # Orchestrator to main (completion)
+    socket O1 -> M1 (frequency: compilation_complete)
+    socket O1 -> M1 (frequency: compilation_error)
+
+    # Main to output
+    socket M1 -> output (frequency: compilation_complete)
+  }

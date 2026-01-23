@@ -1,0 +1,22 @@
+# Test with import
+network import_test {
+  import other_network
+
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 1
+      }
+    }
+  }
+}

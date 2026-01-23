@@ -1,0 +1,22 @@
+# Test with tidal_cycle frequency
+network tidal_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      frequency tidal_cycle
+
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 1
+      }
+    }
+  }
+}

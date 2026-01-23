@@ -1,0 +1,860 @@
+    hyphal linker {
+      frequency tidal_cycle
+
+      state {
+        # Section data
+        text_data: vec<u8>
+        rodata_data: vec<u8>
+        data_data: vec<u8>
+        bss_size: u32
+
+        # Symbols and relocations
+        symbols: vec<SymbolEntry>
+        relocations: vec<RelocationEntry>
+        external_symbols: vec<string>  # Undefined external symbols (builtins)
+
+        # Layout information (file offsets for object file)
+        text_offset: u64
+        rodata_offset: u64
+        data_offset: u64
+        rela_text_offset: u64
+        symtab_offset: u64
+        strtab_offset: u64
+        shstrtab_offset: u64
+
+        # Section header table offset
+        shoff: u64
+
+        # String tables
+        shstrtab: vec<u8>       # Section name string table
+        strtab: vec<u8>         # Symbol string table
+
+        # Output
+        output_buffer: vec<u8>
+        output_file: string
+        entry_point: u64
+
+        # Counters
+        error_count: u32
+
+        # Section indices (for relocations)
+        text_section_idx: u32
+        rodata_section_idx: u32
+        data_section_idx: u32
+        bss_section_idx: u32
+      }
+
+      # -------------------------------------------------------------------------
+      # INITIALIZATION
+      # -------------------------------------------------------------------------
+
+      on rest {
+        if vec_len(state.text_data) == 0 {
+          init_state()
+        }
+      }
+
+      rule init_state() {
+        state.text_data = vec_new()
+        state.rodata_data = vec_new()
+        state.data_data = vec_new()
+        state.bss_size = 0
+
+        state.symbols = vec_new()
+        state.relocations = vec_new()
+        state.external_symbols = vec_new()
+
+        state.shstrtab = vec_new()
+        state.strtab = vec_new()
+        state.output_buffer = vec_new()
+        state.output_file = "a.o"  # Object file extension
+
+        # Section indices (will be set during layout)
+        state.text_section_idx = 1
+        state.rodata_section_idx = 2
+        state.data_section_idx = 3
+        state.bss_section_idx = 4
+      }
+
+      # -------------------------------------------------------------------------
+      # SIGNAL HANDLERS - SENSE PHASE
+      # -------------------------------------------------------------------------
+
+      on signal(machine_code, mc) {
+        # Collect machine code by section
+        match mc.section {
+          ".text" => {
+            for byte in mc.bytes {
+              vec_push(state.text_data, byte)
+            }
+          }
+          ".rodata" => {
+            for byte in mc.bytes {
+              vec_push(state.rodata_data, byte)
+            }
+          }
+          ".data" => {
+            for byte in mc.bytes {
+              vec_push(state.data_data, byte)
+            }
+          }
+          ".bss" => {
+            state.bss_size = state.bss_size + vec_len(mc.bytes)
+          }
+          _ => {}
+        }
+      }
+
+      on signal(relocation, rel) {
+        let entry = RelocationEntry {
+          section: rel.section,
+          offset: rel.offset,
+          symbol: rel.symbol,
+          reloc_type: rel.reloc_type,
+          addend: rel.addend
+        }
+        vec_push(state.relocations, entry)
+      }
+
+      on signal(symbol_def, sym) {
+        let entry = SymbolEntry {
+          name: sym.name,
+          section: sym.section,
+          offset: sym.offset,
+          is_global: sym.is_global,
+          vaddr: 0  # Calculated during layout
+        }
+        vec_push(state.symbols, entry)
+      }
+
+      on signal(section_info, info) {
+        # Section info received (used for validation)
+        if info.name == ".bss" {
+          state.bss_size = info.size
+        }
+      }
+
+      on signal(asm_complete, done) {
+        # All input received - produce relocatable object file
+        link_object_file()
+      }
+
+      # -------------------------------------------------------------------------
+      # MAIN LINKING PROCESS - RELOCATABLE OBJECT FILE
+      # -------------------------------------------------------------------------
+
+      rule link_object_file() {
+        # Step 1: Collect external symbols from unresolved relocations
+        collect_external_symbols()
+
+        # Step 2: Build string tables (needed before layout calculation)
+        build_string_tables()
+
+        # Step 3: Calculate section layout for object file
+        calculate_object_layout()
+
+        # Step 4: Generate relocatable ELF object file
+        generate_elf_object()
+
+        # Step 5: Write to file
+        write_output_file()
+
+        if state.error_count == 0 {
+          emit link_complete {
+            output_file: state.output_file,
+            file_size: vec_len(state.output_buffer),
+            entry_point: 0  # Object files don't have entry points
+          }
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # STEP 1: COLLECT EXTERNAL SYMBOLS
+      # -------------------------------------------------------------------------
+
+      rule collect_external_symbols() {
+        # Find all symbols that are used but not defined
+        for reloc: RelocationEntry in state.relocations {
+          let found = false
+          for sym: SymbolEntry in state.symbols {
+            if sym.name == reloc.symbol {
+              found = true
+              break
+            }
+          }
+          if !found {
+            # Check if already in external list
+            let already_external = false
+            for ext: string in state.external_symbols {
+              if ext == reloc.symbol {
+                already_external = true
+                break
+              }
+            }
+            if !already_external {
+              vec_push(state.external_symbols, reloc.symbol)
+            }
+          }
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # STEP 2: CALCULATE OBJECT FILE LAYOUT
+      # -------------------------------------------------------------------------
+
+      rule calculate_object_layout() {
+        # For a relocatable object file:
+        # - ELF Header: 64 bytes
+        # - Section data follows immediately (no program headers)
+        # - Section headers at end
+
+        let offset: u64 = 64  # After ELF header
+
+        # .text section
+        state.text_offset = offset
+        offset = offset + (vec_len(state.text_data) as u64)
+        offset = align_up(offset, 16)
+
+        # .rodata section
+        state.rodata_offset = offset
+        offset = offset + (vec_len(state.rodata_data) as u64)
+        offset = align_up(offset, 16)
+
+        # .data section
+        state.data_offset = offset
+        offset = offset + (vec_len(state.data_data) as u64)
+        offset = align_up(offset, 8)
+
+        # .rela.text section (24 bytes per relocation)
+        state.rela_text_offset = offset
+        let rela_count = vec_len(state.relocations)
+        offset = offset + ((rela_count * 24) as u64)
+        offset = align_up(offset, 8)
+
+        # .symtab section (24 bytes per symbol)
+        state.symtab_offset = offset
+        # Symbols = 1 null + defined symbols + external symbols
+        let symtab_count = 1 + vec_len(state.symbols) + vec_len(state.external_symbols)
+        offset = offset + ((symtab_count * 24) as u64)
+        offset = align_up(offset, 8)
+
+        # .strtab section
+        state.strtab_offset = offset
+        offset = offset + (vec_len(state.strtab) as u64)
+        offset = align_up(offset, 8)
+
+        # .shstrtab section
+        state.shstrtab_offset = offset
+        offset = offset + (vec_len(state.shstrtab) as u64)
+        offset = align_up(offset, 8)
+
+        # Section header table at end
+        state.shoff = offset
+      }
+
+      # -------------------------------------------------------------------------
+      # HELPER: GET SYMBOL INDEX
+      # -------------------------------------------------------------------------
+
+      rule get_symbol_index(name: string) -> u32 {
+        # Symbol table order: NULL (0), locals (1..L), globals (L+1..L+G), externals
+        # Need to find the symbol and return its index in the reordered table
+
+        # First, count local and global defined symbols
+        let local_count: u32 = 0
+        let global_count: u32 = 0
+        for sym: SymbolEntry in state.symbols {
+          if sym.is_global {
+            global_count = global_count + 1
+          } else {
+            local_count = local_count + 1
+          }
+        }
+
+        # Check if it's a local defined symbol
+        let local_idx: u32 = 1  # Start after NULL
+        for sym: SymbolEntry in state.symbols {
+          if !sym.is_global {
+            if sym.name == name {
+              return local_idx
+            }
+            local_idx = local_idx + 1
+          }
+        }
+
+        # Check if it's a global defined symbol
+        let global_idx: u32 = 1 + local_count  # Start after NULL and locals
+        for sym: SymbolEntry in state.symbols {
+          if sym.is_global {
+            if sym.name == name {
+              return global_idx
+            }
+            global_idx = global_idx + 1
+          }
+        }
+
+        # Check external symbols
+        let ext_idx: u32 = 1 + local_count + global_count  # Start after all defined
+        for ext: string in state.external_symbols {
+          if ext == name {
+            return ext_idx
+          }
+          ext_idx = ext_idx + 1
+        }
+
+        # Not found - shouldn't happen
+        return 0
+      }
+
+      rule get_section_index(section: string) -> u32 {
+        match section {
+          ".text" => state.text_section_idx
+          ".rodata" => state.rodata_section_idx
+          ".data" => state.data_section_idx
+          ".bss" => state.bss_section_idx
+          _ => 0
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # STEP 4: BUILD STRING TABLES
+      # -------------------------------------------------------------------------
+
+      rule build_string_tables() {
+        # Build section name string table (.shstrtab)
+        # Offsets: 0=\0, 1=.text, 7=.rodata, 15=.data, 21=.bss, 26=.rela.text, 37=.symtab, 45=.strtab, 53=.shstrtab
+
+        state.shstrtab = vec_new()
+
+        # Write section names directly as bytes to avoid char_code_at bug
+        # Index 0: empty string (null)
+        vec_push(state.shstrtab, 0u8)
+
+        # Offset 1: ".text\0" (6 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 101u8)  # 'e'
+        vec_push(state.shstrtab, 120u8)  # 'x'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Offset 7: ".rodata\0" (8 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 114u8)  # 'r'
+        vec_push(state.shstrtab, 111u8)  # 'o'
+        vec_push(state.shstrtab, 100u8)  # 'd'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Offset 15: ".data\0" (6 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 100u8)  # 'd'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Offset 21: ".bss\0" (5 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 98u8)   # 'b'
+        vec_push(state.shstrtab, 115u8)  # 's'
+        vec_push(state.shstrtab, 115u8)  # 's'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Offset 26: ".rela.text\0" (11 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 114u8)  # 'r'
+        vec_push(state.shstrtab, 101u8)  # 'e'
+        vec_push(state.shstrtab, 108u8)  # 'l'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 101u8)  # 'e'
+        vec_push(state.shstrtab, 120u8)  # 'x'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Offset 37: ".symtab\0" (8 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 115u8)  # 's'
+        vec_push(state.shstrtab, 121u8)  # 'y'
+        vec_push(state.shstrtab, 109u8)  # 'm'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 98u8)   # 'b'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Offset 45: ".strtab\0" (8 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 115u8)  # 's'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 114u8)  # 'r'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 98u8)   # 'b'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Offset 53: ".shstrtab\0" (10 bytes)
+        vec_push(state.shstrtab, 46u8)   # '.'
+        vec_push(state.shstrtab, 115u8)  # 's'
+        vec_push(state.shstrtab, 104u8)  # 'h'
+        vec_push(state.shstrtab, 115u8)  # 's'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 114u8)  # 'r'
+        vec_push(state.shstrtab, 116u8)  # 't'
+        vec_push(state.shstrtab, 97u8)   # 'a'
+        vec_push(state.shstrtab, 98u8)   # 'b'
+        vec_push(state.shstrtab, 0u8)    # '\0'
+
+        # Build symbol string table (.strtab)
+        state.strtab = vec_new()
+        vec_push(state.strtab, 0u8)  # Index 0: empty string
+
+        # Add defined symbols
+        for sym: SymbolEntry in state.symbols {
+          add_string_to_table(state.strtab, sym.name)
+        }
+
+        # Add external/undefined symbols
+        for ext: string in state.external_symbols {
+          add_string_to_table(state.strtab, ext)
+        }
+      }
+
+      rule add_string_to_table(table: vec<u8>, s: string) {
+        for i in 0..string_len(s) {
+          # Use char_code_at to get the byte value, not char_at which returns a string
+          vec_push(table, char_code_at(s, i))
+        }
+        vec_push(table, 0u8)  # Null terminator
+      }
+
+      # -------------------------------------------------------------------------
+      # STEP 4: GENERATE RELOCATABLE ELF OBJECT FILE
+      # -------------------------------------------------------------------------
+
+      rule generate_elf_object() {
+        state.output_buffer = vec_new()
+
+        # Generate ELF header for relocatable object
+        generate_object_elf_header()
+
+        # Pad to .text offset
+        pad_to_offset(state.text_offset as u32)
+
+        # Write .text section
+        for byte in state.text_data {
+          vec_push(state.output_buffer, byte)
+        }
+
+        # Pad to .rodata offset
+        pad_to_offset(state.rodata_offset as u32)
+
+        # Write .rodata section
+        for byte in state.rodata_data {
+          vec_push(state.output_buffer, byte)
+        }
+
+        # Pad to .data offset
+        pad_to_offset(state.data_offset as u32)
+
+        # Write .data section
+        for byte in state.data_data {
+          vec_push(state.output_buffer, byte)
+        }
+
+        # Pad to .rela.text offset
+        pad_to_offset(state.rela_text_offset as u32)
+
+        # Write .rela.text section (relocation entries)
+        write_rela_text_section()
+
+        # Pad to .symtab offset
+        pad_to_offset(state.symtab_offset as u32)
+
+        # Write .symtab section
+        write_symtab_section()
+
+        # Pad to .strtab offset
+        pad_to_offset(state.strtab_offset as u32)
+
+        # Write .strtab section
+        for byte in state.strtab {
+          vec_push(state.output_buffer, byte)
+        }
+
+        # Pad to .shstrtab offset
+        pad_to_offset(state.shstrtab_offset as u32)
+
+        # Write .shstrtab section
+        for byte in state.shstrtab {
+          vec_push(state.output_buffer, byte)
+        }
+
+        # Pad to section header table offset
+        pad_to_offset(state.shoff as u32)
+
+        # Write section header table
+        write_section_headers()
+      }
+
+      rule generate_object_elf_header() {
+        # ELF Header: 64 bytes for relocatable object
+
+        # e_ident[0..4]: Magic number
+        vec_push(state.output_buffer, 0x7F)
+        vec_push(state.output_buffer, 0x45)  # 'E'
+        vec_push(state.output_buffer, 0x4C)  # 'L'
+        vec_push(state.output_buffer, 0x46)  # 'F'
+
+        # e_ident[4]: Class (64-bit)
+        vec_push(state.output_buffer, 0x02)
+
+        # e_ident[5]: Data (little-endian)
+        vec_push(state.output_buffer, 0x01)
+
+        # e_ident[6]: Version
+        vec_push(state.output_buffer, 0x01)
+
+        # e_ident[7]: OS/ABI (SYSV)
+        vec_push(state.output_buffer, 0x00)
+
+        # e_ident[8..16]: Padding
+        for i in 0..8 {
+          vec_push(state.output_buffer, 0x00)
+        }
+
+        # e_type: ET_REL (relocatable object = 1)
+        write_u16_le(state.output_buffer, 0x0001)
+
+        # e_machine: x86-64
+        write_u16_le(state.output_buffer, 0x003E)
+
+        # e_version: 1
+        write_u32_le(state.output_buffer, 0x00000001)
+
+        # e_entry: 0 (no entry point for object files)
+        write_u64_le(state.output_buffer, 0)
+
+        # e_phoff: 0 (no program headers)
+        write_u64_le(state.output_buffer, 0)
+
+        # e_shoff: Section header table offset
+        write_u64_le(state.output_buffer, state.shoff)
+
+        # e_flags: 0
+        write_u32_le(state.output_buffer, 0)
+
+        # e_ehsize: ELF header size (64)
+        write_u16_le(state.output_buffer, 64)
+
+        # e_phentsize: Program header entry size (0 for object files)
+        write_u16_le(state.output_buffer, 0)
+
+        # e_phnum: Number of program headers (0)
+        write_u16_le(state.output_buffer, 0)
+
+        # e_shentsize: Section header entry size (64)
+        write_u16_le(state.output_buffer, 64)
+
+        # e_shnum: Number of section headers
+        # NULL + .text + .rodata + .data + .bss + .rela.text + .symtab + .strtab + .shstrtab = 9
+        write_u16_le(state.output_buffer, 9)
+
+        # e_shstrndx: Section name string table index (8 = .shstrtab)
+        write_u16_le(state.output_buffer, 8)
+      }
+
+      rule write_rela_text_section() {
+        # Each relocation entry is 24 bytes:
+        # r_offset (8 bytes): offset in section
+        # r_info (8 bytes): (symbol_index << 32) | reloc_type
+        # r_addend (8 bytes): addend
+
+        for reloc: RelocationEntry in state.relocations {
+          # r_offset
+          write_u64_le(state.output_buffer, reloc.offset as u64)
+
+          # r_info: symbol index in upper 32 bits, type in lower 32 bits
+          let sym_idx = get_symbol_index(reloc.symbol)
+          let reloc_type_val: u32 = match reloc.reloc_type {
+            RelocationType::R_X86_64_PC32 => 2
+            RelocationType::R_X86_64_64 => 1
+            RelocationType::R_X86_64_32 => 10
+            RelocationType::R_X86_64_32S => 11
+            RelocationType::R_X86_64_PLT32 => 4
+            _ => 2  # Default to PC32
+          }
+          let r_info: u64 = ((sym_idx as u64) << 32) | (reloc_type_val as u64)
+          write_u64_le(state.output_buffer, r_info)
+
+          # r_addend
+          write_i64_le(state.output_buffer, reloc.addend)
+        }
+      }
+
+      rule write_symtab_section() {
+        # Symbol table entries are 24 bytes each:
+        # st_name (4 bytes): offset in strtab
+        # st_info (1 byte): (binding << 4) | type
+        # st_other (1 byte): visibility
+        # st_shndx (2 bytes): section index
+        # st_value (8 bytes): value
+        # st_size (8 bytes): size
+        #
+        # IMPORTANT: ELF requires all LOCAL symbols before GLOBAL symbols
+        # So we write in order: NULL, local defined, global defined, external (global)
+
+        # Symbol 0: NULL entry
+        write_u32_le(state.output_buffer, 0)   # st_name
+        vec_push(state.output_buffer, 0u8)     # st_info
+        vec_push(state.output_buffer, 0u8)     # st_other
+        write_u16_le(state.output_buffer, 0)   # st_shndx (SHN_UNDEF)
+        write_u64_le(state.output_buffer, 0)   # st_value
+        write_u64_le(state.output_buffer, 0)   # st_size
+
+        # We need to calculate strtab offsets based on the ORDER in strtab,
+        # but write symbols in a different ORDER (local first, then global).
+        # Since strtab was built in symbol order, we need to track offsets per symbol.
+
+        # First pass: LOCAL defined symbols
+        let strtab_offset: u32 = 1  # After null byte
+        for sym: SymbolEntry in state.symbols {
+          if !sym.is_global {
+            # Calculate this symbol's offset in strtab (need to find its position)
+            let sym_strtab_offset = get_strtab_offset_for_symbol(sym.name)
+            write_u32_le(state.output_buffer, sym_strtab_offset)  # st_name
+
+            # st_info: LOCAL (0) << 4 | NOTYPE (0)
+            vec_push(state.output_buffer, 0u8)  # LOCAL binding
+
+            vec_push(state.output_buffer, 0u8)  # st_other (default visibility)
+
+            # st_shndx: section index
+            let shndx = get_section_index(sym.section)
+            write_u16_le(state.output_buffer, shndx as u16)
+
+            # st_value: offset within section
+            write_u64_le(state.output_buffer, sym.offset as u64)
+
+            # st_size: 0 (unknown)
+            write_u64_le(state.output_buffer, 0)
+          }
+        }
+
+        # Second pass: GLOBAL defined symbols
+        for sym: SymbolEntry in state.symbols {
+          if sym.is_global {
+            let sym_strtab_offset = get_strtab_offset_for_symbol(sym.name)
+            write_u32_le(state.output_buffer, sym_strtab_offset)  # st_name
+
+            # st_info: GLOBAL (1) << 4 | NOTYPE (0)
+            vec_push(state.output_buffer, 0x10)  # GLOBAL binding
+
+            vec_push(state.output_buffer, 0u8)  # st_other (default visibility)
+
+            # st_shndx: section index
+            let shndx = get_section_index(sym.section)
+            write_u16_le(state.output_buffer, shndx as u16)
+
+            # st_value: offset within section
+            write_u64_le(state.output_buffer, sym.offset as u64)
+
+            # st_size: 0 (unknown)
+            write_u64_le(state.output_buffer, 0)
+          }
+        }
+
+        # Third pass: External (undefined) symbols - all GLOBAL
+        for ext: string in state.external_symbols {
+          let ext_strtab_offset = get_strtab_offset_for_symbol(ext)
+          write_u32_le(state.output_buffer, ext_strtab_offset)  # st_name
+
+          # st_info: GLOBAL (1) << 4 | NOTYPE (0)
+          vec_push(state.output_buffer, 0x10)  # GLOBAL binding
+
+          vec_push(state.output_buffer, 0u8)   # st_other
+
+          # st_shndx: SHN_UNDEF (0)
+          write_u16_le(state.output_buffer, 0)
+
+          # st_value: 0 (undefined)
+          write_u64_le(state.output_buffer, 0)
+
+          # st_size: 0
+          write_u64_le(state.output_buffer, 0)
+        }
+      }
+
+      # Find the offset of a symbol name in the strtab
+      rule get_strtab_offset_for_symbol(name: string) -> u32 {
+        let offset: u32 = 1  # After null byte
+        # Check defined symbols first
+        for sym: SymbolEntry in state.symbols {
+          if sym.name == name {
+            return offset
+          }
+          offset = offset + (string_len(sym.name) as u32) + 1
+        }
+        # Check external symbols
+        for ext: string in state.external_symbols {
+          if ext == name {
+            return offset
+          }
+          offset = offset + (string_len(ext) as u32) + 1
+        }
+        return 0  # Not found
+      }
+
+      rule write_section_headers() {
+        # Section header table: 9 entries x 64 bytes each
+        # 0: NULL, 1: .text, 2: .rodata, 3: .data, 4: .bss
+        # 5: .rela.text, 6: .symtab, 7: .strtab, 8: .shstrtab
+        #
+        # NOTE: Split into two function calls (6 args each) to work around
+        # Gen0 code generator bug with >6 function arguments
+
+        # Section 0: NULL
+        write_shdr_part1(0, 0, 0, 0, 0, 0)
+        write_shdr_part2(0, 0, 0, 0)
+
+        # Section 1: .text (SHT_PROGBITS = 1, SHF_ALLOC|SHF_EXECINSTR = 6)
+        let text_size = vec_len(state.text_data) as u64
+        write_shdr_part1(1, 1, 6, 0, state.text_offset, text_size)
+        write_shdr_part2(0, 0, 16, 0)
+
+        # Section 2: .rodata (SHT_PROGBITS = 1, SHF_ALLOC = 2)
+        let rodata_size = vec_len(state.rodata_data) as u64
+        write_shdr_part1(7, 1, 2, 0, state.rodata_offset, rodata_size)
+        write_shdr_part2(0, 0, 16, 0)
+
+        # Section 3: .data (SHT_PROGBITS = 1, SHF_ALLOC|SHF_WRITE = 3)
+        let data_size = vec_len(state.data_data) as u64
+        write_shdr_part1(15, 1, 3, 0, state.data_offset, data_size)
+        write_shdr_part2(0, 0, 8, 0)
+
+        # Section 4: .bss (SHT_NOBITS = 8, SHF_ALLOC|SHF_WRITE = 3)
+        write_shdr_part1(21, 8, 3, 0, 0, state.bss_size as u64)
+        write_shdr_part2(0, 0, 8, 0)
+
+        # Section 5: .rela.text (SHT_RELA = 4, SHF_INFO_LINK = 0x40)
+        let rela_size = (vec_len(state.relocations) * 24) as u64
+        # sh_link = 6 (symtab index), sh_info = 1 (.text section index)
+        write_shdr_part1(26, 4, 0x40, 0, state.rela_text_offset, rela_size)
+        write_shdr_part2(6, 1, 8, 24)
+
+        # Section 6: .symtab (SHT_SYMTAB = 2)
+        let symtab_count = 1 + vec_len(state.symbols) + vec_len(state.external_symbols)
+        let symtab_size = (symtab_count * 24) as u64
+        # sh_link = 7 (strtab index), sh_info = first global symbol index
+        # Count local symbols (those with is_global = false)
+        let local_count: u32 = 1  # NULL symbol is "local"
+        for sym: SymbolEntry in state.symbols {
+          if !sym.is_global {
+            local_count = local_count + 1
+          }
+        }
+        # first_global is the index after all local symbols
+        # Since we write all defined symbols first (mixed local/global), then externals (all global),
+        # we need to count how many are local
+        let first_global = local_count
+        write_shdr_part1(37, 2, 0, 0, state.symtab_offset, symtab_size)
+        write_shdr_part2(7, first_global, 8, 24)
+
+        # Section 7: .strtab (SHT_STRTAB = 3)
+        let strtab_size = vec_len(state.strtab) as u64
+        write_shdr_part1(45, 3, 0, 0, state.strtab_offset, strtab_size)
+        write_shdr_part2(0, 0, 1, 0)
+
+        # Section 8: .shstrtab (SHT_STRTAB = 3)
+        let shstrtab_size = vec_len(state.shstrtab) as u64
+        write_shdr_part1(53, 3, 0, 0, state.shstrtab_offset, shstrtab_size)
+        write_shdr_part2(0, 0, 1, 0)
+      }
+
+      # First 6 fields of section header (uses register args only)
+      rule write_shdr_part1(sh_name: u32, sh_type: u32, sh_flags: u64,
+                            sh_addr: u64, sh_offset: u64, sh_size: u64) {
+        write_u32_le(state.output_buffer, sh_name)
+        write_u32_le(state.output_buffer, sh_type)
+        write_u64_le(state.output_buffer, sh_flags)
+        write_u64_le(state.output_buffer, sh_addr)
+        write_u64_le(state.output_buffer, sh_offset)
+        write_u64_le(state.output_buffer, sh_size)
+      }
+
+      # Last 4 fields of section header (uses register args only)
+      rule write_shdr_part2(sh_link: u32, sh_info: u32,
+                            sh_addralign: u64, sh_entsize: u64) {
+        write_u32_le(state.output_buffer, sh_link)
+        write_u32_le(state.output_buffer, sh_info)
+        write_u64_le(state.output_buffer, sh_addralign)
+        write_u64_le(state.output_buffer, sh_entsize)
+      }
+
+      rule write_i64_le(buffer: vec<u8>, value: i64) {
+        vec_push(buffer, (value & 0xFF) as u8)
+        vec_push(buffer, ((value >> 8) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 16) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 24) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 32) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 40) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 48) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 56) & 0xFF) as u8)
+      }
+
+      # -------------------------------------------------------------------------
+      # STEP 5: WRITE OUTPUT FILE
+      # -------------------------------------------------------------------------
+
+      rule write_output_file() {
+        # Write the output buffer to file (object file, no execute permission needed)
+        write_file(state.output_file, state.output_buffer)
+        # Object files don't need execute permission, but set 644 for read access
+        chmod(state.output_file, 420)  # 0o644 = 420 in decimal (rw-r--r--)
+      }
+
+      # -------------------------------------------------------------------------
+      # HELPER FUNCTIONS
+      # -------------------------------------------------------------------------
+
+      rule align_up(value: u64, alignment: u64) -> u64 {
+        if alignment == 0 {
+          return value
+        }
+        return ((value + alignment - 1) / alignment) * alignment
+      }
+
+      rule pad_to_offset(target_offset: u32) {
+        while vec_len(state.output_buffer) < target_offset {
+          vec_push(state.output_buffer, 0u8)
+        }
+      }
+
+      rule write_u16_le(buffer: vec<u8>, value: u16) {
+        vec_push(buffer, (value & 0xFF) as u8)
+        vec_push(buffer, ((value >> 8) & 0xFF) as u8)
+      }
+
+      rule write_u32_le(buffer: vec<u8>, value: u32) {
+        vec_push(buffer, (value & 0xFF) as u8)
+        vec_push(buffer, ((value >> 8) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 16) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 24) & 0xFF) as u8)
+      }
+
+      rule write_u64_le(buffer: vec<u8>, value: u64) {
+        vec_push(buffer, (value & 0xFF) as u8)
+        vec_push(buffer, ((value >> 8) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 16) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 24) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 32) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 40) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 48) & 0xFF) as u8)
+        vec_push(buffer, ((value >> 56) & 0xFF) as u8)
+      }
+
+    }
+

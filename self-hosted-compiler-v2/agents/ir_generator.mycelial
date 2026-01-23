@@ -1,0 +1,1883 @@
+    hyphal ir_generator {
+      state {
+        # Input
+        items: vec<ProgramItem>
+
+        # IR generation context
+        context: IRGenContext
+
+        # Output tracking
+        functions_emitted: u32
+        structs_emitted: u32
+        errors: vec<string>
+        function_names_str: string  # Semicolon-delimited function names
+
+        # Current lowering state
+        current_basic_blocks: vec<BasicBlock>
+        current_instructions: vec<Instruction>
+        current_terminator: Terminator
+      }
+
+      on signal(ast_complete, ast) {
+        # Store AST items directly
+        state.items = ast.items
+
+        # Initialize IR generation context
+        state.context = IRGenContext {
+          current_function: "",
+          current_hyphal: "",
+          current_trigger_frequency: "",
+          temp_counter: 0,
+          label_counter: 0,
+          signal_counter: 0,
+          payload_counter: 0,
+          current_agent_id: 0,
+          frequency_map: map_new(),
+          struct_layouts: map_new(),
+          local_vars: map_new()
+        }
+
+        # Reset counters
+        state.functions_emitted = 0
+        state.structs_emitted = 0
+        vec_clear(state.errors)
+        state.function_names_str = ""
+
+        # Phase 1: Build frequency ID map
+        build_frequency_map()
+
+        # Phase 2: Calculate struct layouts
+        calculate_all_layouts()
+
+        # Phase 3: Lower all hyphae to functions
+        lower_all_hyphae()
+
+        # Emit completion with function names as delimited string
+        emit ir_complete {
+          function_count: state.functions_emitted,
+          struct_count: state.structs_emitted,
+          function_names_str: state.function_names_str
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # PHASE 1: Build Frequency Map
+      # -------------------------------------------------------------------------
+
+      rule build_frequency_map() {
+        let freq_id: u32 = 1
+
+        # Iterate through all program items
+        let items: vec<ProgramItem> = state.items
+        for item: ProgramItem in items {
+          match item {
+            ProgramItem::Frequency(freq_def) => {
+              map_insert(state.context.frequency_map, freq_def.name, freq_id)
+              freq_id = freq_id + 1
+            }
+            ProgramItem::Network(net_def) => {
+              let frequencies: vec<FrequencyDef> = net_def.frequencies
+              for freq: FrequencyDef in frequencies {
+                map_insert(state.context.frequency_map, freq.name, freq_id)
+                freq_id = freq_id + 1
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # PHASE 2: Calculate Struct Layouts
+      # -------------------------------------------------------------------------
+
+      rule calculate_all_layouts() {
+        # Calculate layouts for all frequencies (signal structs)
+        let items: vec<ProgramItem> = state.items
+        for item: ProgramItem in items {
+          match item {
+            ProgramItem::Frequency(freq_def) => {
+              let layout: StructLayout = calculate_struct_layout(freq_def.fields)
+              let struct_name = format("Signal_{}", freq_def.name)
+              map_insert(state.context.struct_layouts, struct_name, layout)
+              emit_struct_def(struct_name, layout)
+            }
+            ProgramItem::Network(net_def) => {
+              # Calculate layouts for network frequencies
+              let frequencies: vec<FrequencyDef> = net_def.frequencies
+              for freq: FrequencyDef in frequencies {
+                let layout: StructLayout = calculate_struct_layout(freq.fields)
+                let struct_name = format("Signal_{}", freq.name)
+                map_insert(state.context.struct_layouts, struct_name, layout)
+                emit_struct_def(struct_name, layout)
+              }
+
+              # Note: Hyphal state struct layouts skipped due to Gen0 nested struct limitations
+              # Will be enabled when Gen2 is bootstrapped
+            }
+            _ => {}
+          }
+        }
+      }
+
+      rule calculate_struct_layout(fields: vec<FieldDef>) -> StructLayout {
+        let field_layouts: vec<FieldLayout> = vec_new()
+        let offset: u32 = 0
+        let max_alignment: u32 = 1
+
+        # First field is freq_id (u32)
+        vec_push(field_layouts, FieldLayout {
+          name: "freq_id",
+          offset: 0,
+          size: 4,
+          field_type: LIRType::I32
+        })
+        offset = 4
+        max_alignment = 4
+
+        # Process other fields
+        for field: FieldDef in fields {
+          let field_size = size_of(field.field_type)
+          let field_align = align_of(field.field_type)
+          max_alignment = max(max_alignment, field_align)
+
+          # Align offset
+          offset = align_up(offset, field_align)
+
+          vec_push(field_layouts, FieldLayout {
+            name: field.name,
+            offset: offset,
+            size: field_size,
+            field_type: type_ref_to_lir(field.field_type)
+          })
+
+          offset = offset + field_size
+        }
+
+        # Align total size to max alignment
+        let total_size = align_up(offset, max_alignment)
+
+        return StructLayout {
+          fields: field_layouts,
+          total_size: total_size,
+          alignment: max_alignment
+        }
+      }
+
+      rule calculate_struct_layout_from_state(state_block: StateBlock) -> StructLayout {
+        let field_layouts: vec<FieldLayout> = vec_new()
+        let offset: u32 = 0
+        let max_alignment: u32 = 1
+
+        # Extract fields to local variable (Gen0 workaround)
+        let fields: vec<StateField> = state_block.fields
+
+        for field: StateField in fields {
+          let field_size = size_of(field.field_type)
+          let field_align = align_of(field.field_type)
+          max_alignment = max(max_alignment, field_align)
+
+          offset = align_up(offset, field_align)
+
+          vec_push(field_layouts, FieldLayout {
+            name: field.name,
+            offset: offset,
+            size: field_size,
+            field_type: type_ref_to_lir(field.field_type)
+          })
+
+          offset = offset + field_size
+        }
+
+        let total_size = align_up(offset, max_alignment)
+
+        return StructLayout {
+          fields: field_layouts,
+          total_size: total_size,
+          alignment: max_alignment
+        }
+      }
+
+      # -------------------------------------------------------------------------
+      # Helper: Size and Alignment
+      # -------------------------------------------------------------------------
+
+      rule size_of(type_ref: TypeRef) -> u32 {
+        match type_ref {
+          TypeRef::Primitive(prim) => {
+            match prim {
+              PrimitiveType::U8 | PrimitiveType::I8 | PrimitiveType::Boolean => 1
+              PrimitiveType::U16 | PrimitiveType::I16 => 2
+              PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::F32 => 4
+              PrimitiveType::U64 | PrimitiveType::I64 | PrimitiveType::F64 => 8
+              PrimitiveType::String | PrimitiveType::Binary => 16  # ptr + len + cap
+              _ => 8
+            }
+          }
+          TypeRef::Vec(_) | TypeRef::Queue(_) | TypeRef::Map(_, _) => 16
+          TypeRef::Custom(_) => 8  # Assume pointer
+          _ => 8
+        }
+      }
+
+      rule align_of(type_ref: TypeRef) -> u32 {
+        match type_ref {
+          TypeRef::Primitive(prim) => {
+            match prim {
+              PrimitiveType::U8 | PrimitiveType::I8 | PrimitiveType::Boolean => 1
+              PrimitiveType::U16 | PrimitiveType::I16 => 2
+              PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::F32 => 4
+              PrimitiveType::U64 | PrimitiveType::I64 | PrimitiveType::F64 |
+              PrimitiveType::String | PrimitiveType::Binary => 8
+              _ => 8
+            }
+          }
+          TypeRef::Vec(_) | TypeRef::Queue(_) | TypeRef::Map(_, _) => 8
+          TypeRef::Custom(_) => 8
+          _ => 8
+        }
+      }
+
+      rule align_up(offset: u32, alignment: u32) -> u32 {
+        return (offset + alignment - 1) & !(alignment - 1)
+      }
+
+      rule max(a: u32, b: u32) -> u32 {
+        if a > b {
+          return a
+        }
+        return b
+      }
+
+      rule type_ref_to_lir(type_ref: TypeRef) -> LIRType {
+        match type_ref {
+          TypeRef::Primitive(prim) => {
+            match prim {
+              PrimitiveType::U8 | PrimitiveType::I8 => LIRType::I8
+              PrimitiveType::U16 | PrimitiveType::I16 => LIRType::I16
+              PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::Boolean => LIRType::I32
+              PrimitiveType::U64 | PrimitiveType::I64 => LIRType::I64
+              PrimitiveType::F32 => LIRType::F32
+              PrimitiveType::F64 => LIRType::F64
+              PrimitiveType::String | PrimitiveType::Binary => LIRType::Ptr
+              _ => LIRType::Ptr
+            }
+          }
+          TypeRef::Vec(_) | TypeRef::Queue(_) | TypeRef::Map(_, _) | TypeRef::Custom(_) => LIRType::Ptr
+          _ => LIRType::Ptr
+        }
+      }
+
+      rule emit_struct_def(name: string, layout: StructLayout) {
+        let struct_fields: vec<StructField> = vec_new()
+
+        for field_layout: FieldLayout in layout.fields {
+          vec_push(struct_fields, StructField {
+            name: field_layout.name,
+            offset: field_layout.offset,
+            size: field_layout.size,
+            field_type: field_layout.field_type
+          })
+        }
+
+        emit lir_struct {
+          name: name,
+          fields: struct_fields,
+          total_size: layout.total_size,
+          alignment: layout.alignment
+        }
+
+        state.structs_emitted = state.structs_emitted + 1
+      }
+
+      # -------------------------------------------------------------------------
+      # PHASE 3: Lower Hyphae to Functions
+      # -------------------------------------------------------------------------
+
+      rule lower_all_hyphae() {
+        let items: vec<ProgramItem> = state.items
+        for item: ProgramItem in items {
+          match item {
+            ProgramItem::Network(net_def) => {
+              let hyphae: vec<HyphalDef> = net_def.hyphae
+              let hyphae_count = vec_len(hyphae)
+              # Use while loop with vec_get for Gen0 compatibility
+              let idx: u32 = 0
+              while idx < hyphae_count {
+                let hyphal: HyphalDef = vec_get(hyphae, idx)
+                lower_hyphal(hyphal)
+                idx = idx + 1
+              }
+            }
+            _ => {}
+          }
+        }
+
+        # Generate main function
+        generate_main_function()
+      }
+
+      rule lower_hyphal(hyphal: HyphalDef) {
+        # Generate dispatch function for this hyphal
+        generate_stub_dispatch(hyphal.name)
+
+        # Generate init function for this hyphal
+        generate_init_function(hyphal.name)
+      }
+
+      rule generate_init_function(hyphal_name: string) {
+        # Generate init function: {hyphal}_init that initializes agent state
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+
+        let func_name = format("{}_init", hyphal_name)
+        state.context.current_function = func_name
+        state.context.current_hyphal = hyphal_name
+
+        # Parameters: (state_ptr: *AgentState)
+        let params: vec<Parameter> = vec_new()
+        vec_push(params, Parameter { name: "state_ptr", param_type: LIRType::Ptr })
+
+        # Entry block - just return for now (actual init requires nested struct access)
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+        add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+        finalize_current_block()
+
+        # Emit function
+        state.function_names_str = format("{}{};", state.function_names_str, func_name)
+        emit lir_function { name: func_name }
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      rule generate_stub_dispatch(hyphal_name: string) {
+        # Generate dispatch function: {hyphal}_dispatch that routes signals
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+
+        let func_name = format("{}_dispatch", hyphal_name)
+        state.context.current_function = func_name
+        state.context.current_hyphal = hyphal_name
+
+        # Parameters: (state_ptr: *AgentState, signal_ptr: *Signal)
+        let params: vec<Parameter> = vec_new()
+        vec_push(params, Parameter { name: "state_ptr", param_type: LIRType::Ptr })
+        vec_push(params, Parameter { name: "signal_ptr", param_type: LIRType::Ptr })
+
+        # Entry block
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+
+        # Load freq_id from signal (offset 0)
+        let freq_id_temp = fresh_temp()
+        add_instruction(Instruction::LoadField(LoadFieldInst {
+          dst: freq_id_temp,
+          object: "signal_ptr",
+          offset: 0
+        }))
+
+        # For now, just return (stub - actual dispatch logic requires nested struct access)
+        add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+        finalize_current_block()
+
+        # Emit function
+        state.function_names_str = format("{}{};", state.function_names_str, func_name)
+        emit lir_function { name: func_name }
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      rule generate_main_function() {
+        # Generate _start/main function that initializes the runtime
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+
+        state.context.current_function = "main"
+        state.context.current_hyphal = ""
+
+        # No parameters for main
+        let params: vec<Parameter> = vec_new()
+
+        # Entry block
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+
+        # Call runtime_init
+        add_instruction(Instruction::Call(CallInst {
+          dst: "",
+          func: "runtime_init",
+          args: vec_new()
+        }))
+
+        # Return 0
+        let zero_temp = fresh_temp()
+        add_instruction(Instruction::Const(ConstInst {
+          dst: zero_temp,
+          value: ConstValue::Int(0),
+          const_type: LIRType::I32
+        }))
+        add_terminator(Terminator::Return(ReturnTerm { value: zero_temp }))
+        finalize_current_block()
+
+        # Emit function
+        state.function_names_str = format("{}main;", state.function_names_str)
+        emit lir_function { name: "main" }
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      rule lower_method(hyphal_name: string, method: MethodDef) {
+        # Reset function context
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+        map_clear(state.context.local_vars)
+
+        state.context.current_hyphal = hyphal_name
+
+        # Function name: rule_{hyphal}_{method_name}
+        let func_name = format("rule_{}_{}", hyphal_name, method.name)
+        state.context.current_function = func_name
+
+        # Build parameters from method definition
+        let params: vec<Parameter> = vec_new()
+        # Add state_ptr as implicit first parameter
+        vec_push(params, Parameter { name: "state_ptr", param_type: LIRType::Ptr })
+
+        # Add explicit parameters
+        for param: ParamDef in method.params {
+          map_insert(state.context.local_vars, param.name, param.name)
+          vec_push(params, Parameter { name: param.name, param_type: type_ref_to_lir_type(param.param_type) })
+        }
+
+        # Create entry basic block
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+
+        # Lower method body
+        for stmt: Statement in method.body {
+          lower_statement(stmt)
+        }
+
+        # Add return terminator if no other terminator added
+        if vec_len(state.current_instructions) > 0 {
+          add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+          finalize_current_block()
+        }
+
+        # Emit function
+        state.function_names_str = format("{}{};", state.function_names_str, func_name)
+        emit lir_function { name: func_name }
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      rule type_ref_to_lir_type(t: TypeRef) -> LIRType {
+        match t {
+          TypeRef::Primitive(prim) => {
+            match prim {
+              PrimitiveType::U8 | PrimitiveType::I8 => { return LIRType::I8 }
+              PrimitiveType::U16 | PrimitiveType::I16 => { return LIRType::I16 }
+              PrimitiveType::U32 | PrimitiveType::I32 => { return LIRType::I32 }
+              PrimitiveType::U64 | PrimitiveType::I64 => { return LIRType::I64 }
+              PrimitiveType::F32 => { return LIRType::F32 }
+              PrimitiveType::F64 => { return LIRType::F64 }
+              PrimitiveType::Boolean => { return LIRType::I32 }
+              PrimitiveType::String => { return LIRType::Ptr }
+              _ => { return LIRType::Ptr }
+            }
+          }
+          TypeRef::Vec(_) | TypeRef::Map(_, _) | TypeRef::Queue(_) | TypeRef::Custom(_) => {
+            return LIRType::Ptr
+          }
+          _ => { return LIRType::Void }
+        }
+      }
+
+      rule lower_rule(hyphal_name: string, rule: Rule, rule_idx: u32) {
+        # Reset function context
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+        map_clear(state.context.local_vars)
+
+        # Set current hyphal and trigger context
+        state.context.current_hyphal = hyphal_name
+
+        # Extract trigger name and set frequency context
+        # FIXME: Simplified - parser doesn't support match with enum destructuring yet
+        let trigger_name = "signal_unknown"
+        state.context.current_trigger_frequency = ""
+
+        # Function name: {hyphal}_{trigger}_rule_{idx}
+        let func_name = format("{}_{}_rule_{}", hyphal_name, trigger_name, rule_idx)
+        state.context.current_function = func_name
+
+        # Parameters: (state_ptr: *AgentState, signal_ptr: *Signal)
+        let params: vec<Parameter> = vec_new()
+        vec_push(params, Parameter { name: "state_ptr", param_type: LIRType::Ptr })
+        vec_push(params, Parameter { name: "signal_ptr", param_type: LIRType::Ptr })
+
+        # Create entry basic block
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+
+        # Lower rule body
+        for stmt: Statement in rule.body {
+          lower_statement(stmt)
+        }
+
+        # Add return terminator if no other terminator added
+        if vec_len(state.current_instructions) > 0 {
+          add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+          finalize_current_block()
+        }
+
+        # Emit function
+        state.function_names_str = format("{}{};", state.function_names_str, func_name)
+        emit lir_function { name: func_name }
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      # -------------------------------------------------------------------------
+      # Statement Lowering
+      # -------------------------------------------------------------------------
+
+      rule lower_statement(stmt: Statement) {
+        match stmt {
+          Statement::Let(let_stmt) => {
+            lower_let_statement(let_stmt)
+          }
+          Statement::Assignment(assign_stmt) => {
+            lower_assignment_statement(assign_stmt)
+          }
+          Statement::Conditional(cond_stmt) => {
+            lower_conditional_statement(cond_stmt)
+          }
+          Statement::WhileLoop(while_stmt) => {
+            lower_while_loop_statement(while_stmt)
+          }
+          Statement::ForLoop(for_stmt) => {
+            lower_for_loop_statement(for_stmt)
+          }
+          Statement::Emit(emit_stmt) => {
+            lower_emit_statement(emit_stmt)
+          }
+          Statement::Report(report_stmt) => {
+            lower_report_statement(report_stmt)
+          }
+          Statement::Return(ret_stmt) => {
+            lower_return_statement(ret_stmt)
+          }
+          Statement::Expression(expr_stmt) => {
+            # Expression statement - evaluate for side effects
+            lower_expression(expr_stmt.expression)
+          }
+          Statement::Match(match_stmt) => {
+            lower_match_statement(match_stmt)
+          }
+          Statement::Break(brk_stmt) => {
+            # Break: jump to loop end (need loop context tracking)
+            # For now, emit a placeholder
+          }
+          Statement::Continue(cont_stmt) => {
+            # Continue: jump to loop start (need loop context tracking)
+            # For now, emit a placeholder
+          }
+          _ => {}
+        }
+      }
+
+      rule lower_return_statement(stmt: ReturnStatement) {
+        let return_val = ""
+        if stmt.value != Expression::None {
+          return_val = lower_expression(stmt.value)
+        }
+        add_terminator(Terminator::Return(ReturnTerm { value: return_val }))
+        finalize_current_block()
+        # Start a new unreachable block for any code after return
+        let dead_label = fresh_label()
+        start_basic_block(dead_label)
+      }
+
+      rule lower_match_statement(stmt: MatchStatement) {
+        # Match statement: similar to match expression but without result value
+        let end_label = fresh_label()
+        let subject_temp = lower_expression(stmt.subject)
+
+        for i in 0..vec_len(stmt.arms) {
+          let arm: MatchArm = vec_get(stmt.arms, i)
+          let next_arm_label = if i < vec_len(stmt.arms) - 1 { fresh_label() } else { "" }
+          let arm_body_label = fresh_label()
+
+          let match_cond = lower_pattern_match(arm.pattern, subject_temp)
+
+          if match_cond != "" {
+            if next_arm_label != "" {
+              add_terminator(Terminator::Branch(BranchTerm {
+                condition: match_cond,
+                true_label: arm_body_label,
+                false_label: next_arm_label
+              }))
+            } else {
+              add_terminator(Terminator::Jump(JumpTerm { target: arm_body_label }))
+            }
+            finalize_current_block()
+          }
+
+          start_basic_block(arm_body_label)
+
+          for stmt: Statement in arm.body {
+            lower_statement(stmt)
+          }
+
+          add_terminator(Terminator::Jump(JumpTerm { target: end_label }))
+          finalize_current_block()
+
+          if next_arm_label != "" {
+            start_basic_block(next_arm_label)
+          }
+        }
+
+        start_basic_block(end_label)
+      }
+
+      rule lower_let_statement(stmt: LetStatement) {
+        # Lower the value expression
+        let value_temp = lower_expression(stmt.value)
+
+        # Store in local variable map
+        map_insert(state.context.local_vars, stmt.name, value_temp)
+      }
+
+      rule lower_assignment_statement(stmt: AssignmentStatement) {
+        match stmt.target {
+          AssignmentTarget::StateField(field_name) => {
+            # Lower: state.field = value
+            # 1. Get field offset
+            let struct_name = format("AgentState_{}", state.context.current_hyphal)
+            let layout: StructLayout = map_get(state.context.struct_layouts, struct_name)
+            let field_offset = get_field_offset(layout, field_name)
+
+            # 2. Lower value expression
+            let value_temp = lower_expression(stmt.value)
+
+            # 3. Emit store_field instruction
+            add_instruction(Instruction::StoreField(StoreFieldInst {
+              object: "state_ptr",
+              offset: field_offset,
+              src: value_temp
+            }))
+          }
+          AssignmentTarget::FieldAccess(object_expr, field_name) => {
+            # Lower: obj.field = value (for nested access like state.context.field)
+            # 1. Lower object expression to get pointer
+            let object_ptr = lower_expression(object_expr)
+
+            # 2. Get field offset - need to determine the struct type from the expression
+            # For state.X.field, X should be a pointer to a struct
+            let field_offset: u32 = get_nested_field_offset(object_expr, field_name)
+
+            # 3. Lower value expression
+            let value_temp = lower_expression(stmt.value)
+
+            # 4. Emit store through pointer
+            add_instruction(Instruction::StoreField(StoreFieldInst {
+              object: object_ptr,
+              offset: field_offset,
+              src: value_temp
+            }))
+          }
+          AssignmentTarget::Variable(var_name) => {
+            # Lower: local_var = value
+            let value_temp = lower_expression(stmt.value)
+            # Store to local variable slot
+            if map_has(state.context.local_vars, var_name) {
+              let var_slot = map_get(state.context.local_vars, var_name)
+              add_instruction(Instruction::Copy(CopyInst {
+                dest: var_slot,
+                src: value_temp
+              }))
+            }
+          }
+          _ => {}
+        }
+      }
+
+      rule get_nested_field_offset(object_expr: Expression, field_name: string) -> u32 {
+        # Determine the struct type from the expression and get field offset
+        # For now, handle common case of state.X.field where X is a struct pointer
+        match object_expr {
+          Expression::StateAccess(sa) => {
+            # state.X.field - X should be a struct type
+            let field_type = get_state_field_type(sa.field)
+            if map_has(state.context.struct_layouts, field_type) {
+              let layout = map_get(state.context.struct_layouts, field_type)
+              return get_field_offset(layout, field_name)
+            }
+          }
+          _ => {}
+        }
+        return 0
+      }
+
+      rule get_state_field_type(field_name: string) -> string {
+        # Get the type of a state field
+        let struct_name = format("AgentState_{}", state.context.current_hyphal)
+        if map_has(state.context.struct_layouts, struct_name) {
+          let layout = map_get(state.context.struct_layouts, struct_name)
+          if map_has(layout.field_types, field_name) {
+            return map_get(layout.field_types, field_name)
+          }
+        }
+        return ""
+      }
+
+      rule lower_conditional_statement(stmt: ConditionalStatement) {
+        # Create labels
+        let then_label = fresh_label()
+        let else_label = fresh_label()
+        let merge_label = fresh_label()
+
+        # Lower condition
+        let cond_temp = lower_expression(stmt.condition)
+
+        # Add branch terminator
+        add_terminator(Terminator::Branch(BranchTerm {
+          condition: cond_temp,
+          true_label: then_label,
+          false_label: else_label
+        }))
+        finalize_current_block()
+
+        # Then block
+        start_basic_block(then_label)
+        for then_stmt: Statement in stmt.then_body {
+          lower_statement(then_stmt)
+        }
+        add_terminator(Terminator::Jump(JumpTerm { target: merge_label }))
+        finalize_current_block()
+
+        # Else block
+        start_basic_block(else_label)
+        for else_stmt: Statement in stmt.else_body {
+          lower_statement(else_stmt)
+        }
+        add_terminator(Terminator::Jump(JumpTerm { target: merge_label }))
+        finalize_current_block()
+
+        # Merge block
+        start_basic_block(merge_label)
+      }
+
+      rule lower_while_loop_statement(stmt: WhileLoopStatement) {
+        # Create labels for loop structure
+        let loop_header = fresh_label()
+        let loop_body = fresh_label()
+        let loop_exit = fresh_label()
+
+        # Jump to loop header (end current block)
+        add_terminator(Terminator::Jump(JumpTerm { target: loop_header }))
+        finalize_current_block()
+
+        # Loop header: evaluate condition
+        start_basic_block(loop_header)
+        let cond_temp = lower_expression(stmt.condition)
+        add_terminator(Terminator::Branch(BranchTerm {
+          condition: cond_temp,
+          true_label: loop_body,
+          false_label: loop_exit
+        }))
+        finalize_current_block()
+
+        # Loop body: execute statements, then jump back to header
+        start_basic_block(loop_body)
+        for body_stmt: Statement in stmt.body {
+          lower_statement(body_stmt)
+        }
+        add_terminator(Terminator::Jump(JumpTerm { target: loop_header }))
+        finalize_current_block()
+
+        # Loop exit: continue execution after loop
+        start_basic_block(loop_exit)
+      }
+
+      rule lower_for_loop_statement(stmt: ForLoopStatement) {
+        # Handle range-based for loops: for i in start..end { body }
+        # The iterable should be a Range expression
+
+        # Create labels for loop structure
+        let loop_header = fresh_label()
+        let loop_body = fresh_label()
+        let loop_exit = fresh_label()
+
+        # Check if iterable is a range expression
+        match stmt.iterable {
+          Expression::Range(range_expr) => {
+            # Evaluate start and end values
+            let start_temp = lower_expression(range_expr.start)
+            let end_temp = lower_expression(range_expr.end)
+
+            # Create loop counter variable, initialized to start
+            let counter_var = fresh_temp()
+            add_instruction(Instruction::Move(MoveInst {
+              dst: counter_var,
+              src: start_temp
+            }))
+
+            # Store loop variable in local scope
+            map_insert(state.context.local_vars, stmt.variable, counter_var)
+
+            # Jump to loop header
+            add_terminator(Terminator::Jump(JumpTerm { target: loop_header }))
+            finalize_current_block()
+
+            # Loop header: check if counter < end
+            start_basic_block(loop_header)
+            let cmp_temp = fresh_temp()
+            add_instruction(Instruction::CmpLt(CompareInst {
+              dst: cmp_temp,
+              lhs: counter_var,
+              rhs: end_temp
+            }))
+            add_terminator(Terminator::Branch(BranchTerm {
+              condition: cmp_temp,
+              true_label: loop_body,
+              false_label: loop_exit
+            }))
+            finalize_current_block()
+
+            # Loop body: execute statements
+            start_basic_block(loop_body)
+            for body_stmt: Statement in stmt.body {
+              lower_statement(body_stmt)
+            }
+
+            # Increment counter
+            let inc_temp = fresh_temp()
+            let one_temp = fresh_temp()
+            add_instruction(Instruction::Const(ConstInst {
+              dst: one_temp,
+              value: ConstValue::Int(1),
+              const_type: LIRType::I64
+            }))
+            add_instruction(Instruction::Add(BinaryInst {
+              dst: inc_temp,
+              lhs: counter_var,
+              rhs: one_temp
+            }))
+            add_instruction(Instruction::Move(MoveInst {
+              dst: counter_var,
+              src: inc_temp
+            }))
+
+            # Jump back to header
+            add_terminator(Terminator::Jump(JumpTerm { target: loop_header }))
+            finalize_current_block()
+
+            # Loop exit
+            start_basic_block(loop_exit)
+          }
+          _ => {
+            # Non-range iterables not yet supported
+          }
+        }
+      }
+
+      rule lower_emit_statement(stmt: EmitStatement) {
+        # M2 Phase 2: Updated to use signal-specific IR instructions
+
+        # 1. Get frequency ID and layout information
+        let freq_id = map_get(state.context.frequency_map, stmt.frequency)
+        let struct_name = format("Signal_{}", stmt.frequency)
+        let layout: StructLayout = map_get(state.context.struct_layouts, struct_name)
+        let source_agent_id = get_current_agent_id()
+
+        # 2. Allocate signal struct (32-byte header)
+        let sig_var = fresh_signal_var()
+        add_instruction(Instruction::SignalAlloc(SignalAllocInst {
+          dst: sig_var,
+          frequency_id: freq_id,
+          source_agent_id: source_agent_id
+        }))
+
+        # 3. Allocate payload struct
+        let payload_var = fresh_payload_var()
+        add_instruction(Instruction::Alloc(AllocInst {
+          dst: payload_var,
+          size: layout.total_size
+        }))
+
+        # 4. Set each field in payload struct
+        for field_init: FieldInit in stmt.fields {
+          let field_offset = get_field_offset(layout, field_init.name)
+          let value_temp = lower_expression(field_init.value)
+
+          add_instruction(Instruction::SignalSetField(SignalSetFieldInst {
+            payload: payload_var,
+            field_offset: field_offset,
+            value: value_temp
+          }))
+        }
+
+        # 5. Attach payload to signal
+        add_instruction(Instruction::SignalSetPayload(SignalSetPayloadInst {
+          signal: sig_var,
+          payload: payload_var,
+          payload_size: layout.total_size
+        }))
+
+        # 6. Emit the signal
+        add_instruction(Instruction::SignalEmit(SignalEmitInst {
+          signal: sig_var,
+          frequency_id: freq_id
+        }))
+      }
+
+      rule lower_report_statement(stmt: ReportStatement) {
+        let value_temp = lower_expression(stmt.value)
+        # TODO: Call runtime_report function
+      }
+
+      # -------------------------------------------------------------------------
+      # Expression Lowering
+      # -------------------------------------------------------------------------
+
+      rule lower_expression(expr: Expression) -> string {
+        match expr {
+          Expression::Literal(lit_expr) => {
+            return lower_literal(lit_expr)
+          }
+          Expression::Identifier(id_expr) => {
+            return lower_identifier(id_expr)
+          }
+          Expression::StateAccess(state_access) => {
+            return lower_state_access(state_access)
+          }
+          Expression::SignalAccess(sig_access) => {
+            return lower_signal_access(sig_access)
+          }
+          Expression::BinaryOp(bin_op) => {
+            return lower_binary_op(bin_op)
+          }
+          Expression::Call(call_expr) => {
+            return lower_call(call_expr)
+          }
+          Expression::FieldAccess(field_access) => {
+            return lower_field_access(field_access)
+          }
+          Expression::Grouped(grouped) => {
+            return lower_expression(grouped.inner)
+          }
+          Expression::UnaryOp(unary_op) => {
+            return lower_unary_op(unary_op)
+          }
+          Expression::IfExpr(if_expr) => {
+            return lower_if_expression(if_expr)
+          }
+          Expression::MatchExpr(match_expr) => {
+            return lower_match_expression(match_expr)
+          }
+          Expression::Tuple(tuple_expr) => {
+            return lower_tuple_expression(tuple_expr)
+          }
+          Expression::IndexAccess(index_access) => {
+            return lower_index_access(index_access)
+          }
+          Expression::MethodCall(method_call) => {
+            return lower_method_call(method_call)
+          }
+          Expression::Cast(cast_expr) => {
+            return lower_cast_expression(cast_expr)
+          }
+          _ => {
+            return ""
+          }
+        }
+      }
+
+      rule lower_if_expression(expr: IfExpression) -> string {
+        # If-expression: if cond { then } else { else }
+        # Lowered to: result = phi(then_val, else_val) based on cond
+
+        let result_temp = fresh_temp()
+        let then_label = fresh_label()
+        let else_label = fresh_label()
+        let merge_label = fresh_label()
+
+        # Evaluate condition
+        let cond_temp = lower_expression(expr.condition)
+
+        # Branch based on condition
+        add_terminator(Terminator::Branch(BranchTerm {
+          condition: cond_temp,
+          true_label: then_label,
+          false_label: else_label
+        }))
+        finalize_current_block()
+
+        # Then block: evaluate then expression
+        start_basic_block(then_label)
+        let then_temp = lower_expression(expr.then_expr)
+        add_instruction(Instruction::Move(MoveInst {
+          dst: result_temp,
+          src: then_temp
+        }))
+        add_terminator(Terminator::Jump(JumpTerm { target: merge_label }))
+        finalize_current_block()
+
+        # Else block: evaluate else expression
+        start_basic_block(else_label)
+        let else_temp = lower_expression(expr.else_expr)
+        add_instruction(Instruction::Move(MoveInst {
+          dst: result_temp,
+          src: else_temp
+        }))
+        add_terminator(Terminator::Jump(JumpTerm { target: merge_label }))
+        finalize_current_block()
+
+        # Merge block
+        start_basic_block(merge_label)
+
+        return result_temp
+      }
+
+      rule lower_match_expression(expr: MatchExpression) -> string {
+        # Match expression lowering: convert to series of conditional branches
+        # Similar to a chain of if-else-if statements
+
+        let result_temp = fresh_temp()
+        let end_label = fresh_label()
+
+        # Evaluate the subject once
+        let subject_temp = lower_expression(expr.subject)
+
+        # Generate code for each arm
+        for i in 0..vec_len(expr.arms) {
+          let arm: MatchArm = vec_get(expr.arms, i)
+          let next_arm_label = if i < vec_len(expr.arms) - 1 { fresh_label() } else { "" }
+          let arm_body_label = fresh_label()
+
+          # Lower the pattern match (generates condition check)
+          let match_cond = lower_pattern_match(arm.pattern, subject_temp)
+
+          if match_cond != "" {
+            # Branch based on pattern match
+            if next_arm_label != "" {
+              add_terminator(Terminator::Branch(BranchTerm {
+                condition: match_cond,
+                true_label: arm_body_label,
+                false_label: next_arm_label
+              }))
+            } else {
+              # Last arm (default/wildcard)
+              add_terminator(Terminator::Jump(JumpTerm { target: arm_body_label }))
+            }
+            finalize_current_block()
+          }
+
+          # Arm body
+          start_basic_block(arm_body_label)
+
+          # Lower statements in arm body
+          for stmt: Statement in arm.body {
+            lower_statement(stmt)
+          }
+
+          add_terminator(Terminator::Jump(JumpTerm { target: end_label }))
+          finalize_current_block()
+
+          # Start next arm's test block
+          if next_arm_label != "" {
+            start_basic_block(next_arm_label)
+          }
+        }
+
+        # End block (merge point)
+        start_basic_block(end_label)
+
+        return result_temp
+      }
+
+      rule lower_pattern_match(pattern: Pattern, subject_temp: string) -> string {
+        # Generate IR that evaluates to true/false if pattern matches subject
+        match pattern {
+          Pattern::Wildcard => {
+            # Wildcard always matches - return constant true
+            let temp = fresh_temp()
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Bool(true),
+              const_type: LIRType::I32
+            }))
+            return temp
+          }
+          Pattern::Literal(lit_pat) => {
+            # Compare subject to literal value
+            let lit_temp = fresh_temp()
+            match lit_pat.value {
+              Literal::Number(n) => {
+                add_instruction(Instruction::Const(ConstInst {
+                  dst: lit_temp,
+                  value: ConstValue::Int(n),
+                  const_type: LIRType::I64
+                }))
+              }
+              Literal::Bool(b) => {
+                add_instruction(Instruction::Const(ConstInst {
+                  dst: lit_temp,
+                  value: ConstValue::Bool(b),
+                  const_type: LIRType::I32
+                }))
+              }
+              _ => {
+                return ""
+              }
+            }
+            let result = fresh_temp()
+            add_instruction(Instruction::CmpEq(CompareInst {
+              dst: result,
+              lhs: subject_temp,
+              rhs: lit_temp
+            }))
+            return result
+          }
+          Pattern::Identifier(name) => {
+            # Binding pattern - always matches, binds subject to name
+            map_insert(state.context.local_vars, name, subject_temp)
+            let temp = fresh_temp()
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Bool(true),
+              const_type: LIRType::I32
+            }))
+            return temp
+          }
+          _ => {
+            # TODO: Handle EnumVariant, Tuple patterns
+            return ""
+          }
+        }
+      }
+
+      rule lower_tuple_expression(expr: TupleExpr) -> string {
+        # Tuple expressions are lowered to struct-like allocations
+        # For now, we allocate space and store each element
+        let tuple_size = vec_len(expr.elements) * 8  # Assume 8 bytes per element
+        let tuple_ptr = fresh_temp()
+
+        # Allocate space for tuple
+        add_instruction(Instruction::Alloc(AllocInst {
+          dst: tuple_ptr,
+          size: tuple_size as u32
+        }))
+
+        # Store each element
+        for i in 0..vec_len(expr.elements) {
+          let elem: Expression = vec_get(expr.elements, i)
+          let elem_temp = lower_expression(elem)
+          let offset = i * 8
+
+          # Get address of element slot
+          let elem_addr = fresh_temp()
+          add_instruction(Instruction::GetFieldAddr(GetFieldAddrInst {
+            dst: elem_addr,
+            object: tuple_ptr,
+            offset: offset as u32
+          }))
+
+          # Store element
+          add_instruction(Instruction::Store(StoreInst {
+            addr: elem_addr,
+            value: elem_temp
+          }))
+        }
+
+        return tuple_ptr
+      }
+
+      rule lower_index_access(expr: IndexAccessExpr) -> string {
+        # Array/map index access: obj[index]
+        let obj_temp = lower_expression(expr.object)
+        let index_temp = lower_expression(expr.index)
+
+        # For now, call a builtin function to handle the indexing
+        let result = fresh_temp()
+        let args: vec<string> = vec_new()
+        vec_push(args, obj_temp)
+        vec_push(args, index_temp)
+
+        add_instruction(Instruction::Call(CallInst {
+          dst: result,
+          function: "__mycelial_index",
+          args: args
+        }))
+
+        return result
+      }
+
+      rule lower_method_call(expr: MethodCallExpr) -> string {
+        # Method call: obj.method(args)
+        let obj_temp = lower_expression(expr.object)
+
+        # Lower all arguments
+        let arg_temps: vec<string> = vec_new()
+        vec_push(arg_temps, obj_temp)  # Self is first argument
+        for arg: Expression in expr.args {
+          vec_push(arg_temps, lower_expression(arg))
+        }
+
+        let result = fresh_temp()
+        add_instruction(Instruction::Call(CallInst {
+          dst: result,
+          function: expr.method,
+          args: arg_temps
+        }))
+
+        return result
+      }
+
+      rule lower_cast_expression(expr: CastExpr) -> string {
+        # Cast expression: value as Type
+        # For now, just pass through the value (casts are mostly for type checking)
+        return lower_expression(expr.expr)
+      }
+
+      rule lower_unary_op(op_expr: UnaryOpExpr) -> string {
+        let operand_temp = lower_expression(op_expr.operand)
+        let result_temp = fresh_temp()
+
+        match op_expr.op {
+          UnaryOperator::Not => {
+            add_instruction(Instruction::Not(UnaryInst {
+              dst: result_temp,
+              operand: operand_temp
+            }))
+          }
+          UnaryOperator::Neg => {
+            add_instruction(Instruction::Neg(UnaryInst {
+              dst: result_temp,
+              operand: operand_temp
+            }))
+          }
+          UnaryOperator::Pos => {
+            # Unary + is a no-op, just return operand
+            return operand_temp
+          }
+        }
+
+        return result_temp
+      }
+
+      rule lower_literal(lit: LiteralExpr) -> string {
+        let temp = fresh_temp()
+
+        match lit.value {
+          Literal::Number(n) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Int(n),
+              const_type: LIRType::I64
+            }))
+          }
+          Literal::Float(f) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Float(f),
+              const_type: LIRType::F64
+            }))
+          }
+          Literal::String(s) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::String(s),
+              const_type: LIRType::Ptr
+            }))
+          }
+          Literal::Bool(b) => {
+            add_instruction(Instruction::Const(ConstInst {
+              dst: temp,
+              value: ConstValue::Bool(b),
+              const_type: LIRType::I32
+            }))
+          }
+        }
+
+        return temp
+      }
+
+      rule lower_identifier(id: IdentifierExpr) -> string {
+        # Look up in local variables
+        if map_contains_key(state.context.local_vars, id.name) {
+          return map_get(state.context.local_vars, id.name)
+        }
+
+        # Unknown identifier - return empty for now
+        # TODO: Error handling
+        return ""
+      }
+
+      rule lower_state_access(access: StateAccessExpr) -> string {
+        # state.field -> load from state struct
+        let struct_name = format("AgentState_{}", state.context.current_hyphal)
+        let layout: StructLayout = map_get(state.context.struct_layouts, struct_name)
+        let field_offset = get_field_offset(layout, access.field)
+
+        # Get field address
+        let field_addr = fresh_temp()
+        add_instruction(Instruction::GetFieldAddr(GetFieldAddrInst {
+          dst: field_addr,
+          object: "state_ptr",
+          offset: field_offset
+        }))
+
+        # Load value
+        let value_temp = fresh_temp()
+        add_instruction(Instruction::Load(LoadInst {
+          dst: value_temp,
+          addr: field_addr
+        }))
+
+        return value_temp
+      }
+
+      rule lower_signal_access(access: SignalAccessExpr) -> string {
+        # g.name -> load from signal struct
+        # Use current trigger frequency, not binding name
+        let struct_name = format("Signal_{}", state.context.current_trigger_frequency)
+        let layout: StructLayout = map_get(state.context.struct_layouts, struct_name)
+        let field_offset = get_field_offset(layout, access.field)
+
+        # Get field address
+        let field_addr = fresh_temp()
+        add_instruction(Instruction::GetFieldAddr(GetFieldAddrInst {
+          dst: field_addr,
+          object: "signal_ptr",
+          offset: field_offset
+        }))
+
+        # Load value
+        let value_temp = fresh_temp()
+        add_instruction(Instruction::Load(LoadInst {
+          dst: value_temp,
+          addr: field_addr
+        }))
+
+        return value_temp
+      }
+
+      rule lower_binary_op(op_expr: BinaryOpExpr) -> string {
+        let lhs_temp = lower_expression(op_expr.left)
+        let rhs_temp = lower_expression(op_expr.right)
+        let result_temp = fresh_temp()
+
+        match op_expr.op {
+          BinaryOperator::Add => {
+            add_instruction(Instruction::Add(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Sub => {
+            add_instruction(Instruction::Sub(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Mul => {
+            add_instruction(Instruction::Mul(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Div => {
+            add_instruction(Instruction::Div(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Mod => {
+            add_instruction(Instruction::Mod(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Eq => {
+            add_instruction(Instruction::CmpEq(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Ne => {
+            add_instruction(Instruction::CmpNe(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Lt => {
+            add_instruction(Instruction::CmpLt(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Le => {
+            add_instruction(Instruction::CmpLe(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Gt => {
+            add_instruction(Instruction::CmpGt(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Ge => {
+            add_instruction(Instruction::CmpGe(CompareInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::And => {
+            add_instruction(Instruction::And(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Or => {
+            add_instruction(Instruction::Or(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::BitAnd => {
+            add_instruction(Instruction::And(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::BitOr => {
+            add_instruction(Instruction::Or(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Shl => {
+            add_instruction(Instruction::Shl(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+          BinaryOperator::Shr => {
+            add_instruction(Instruction::Shr(BinaryInst {
+              dst: result_temp,
+              lhs: lhs_temp,
+              rhs: rhs_temp
+            }))
+          }
+        }
+
+        return result_temp
+      }
+
+      rule is_builtin(name: string) -> bool {
+        # Check if function is a known builtin
+        # Vector operations
+        if name == "vec_new" { return true }
+        if name == "vec_len" { return true }
+        if name == "vec_push" { return true }
+        if name == "vec_get" { return true }
+        if name == "vec_set" { return true }
+        if name == "vec_clear" { return true }
+        if name == "vec_pop" { return true }
+        if name == "vec_from" { return true }
+        # Map operations
+        if name == "map_new" { return true }
+        if name == "map_get" { return true }
+        if name == "map_set" { return true }
+        if name == "map_insert" { return true }
+        if name == "map_has" { return true }
+        if name == "map_keys" { return true }
+        if name == "map_len" { return true }
+        if name == "map_clear" { return true }
+        # String operations
+        if name == "string_eq" { return true }
+        if name == "string_len" { return true }
+        if name == "len" { return true }
+        if name == "starts_with" { return true }
+        if name == "ends_with" { return true }
+        if name == "contains" { return true }
+        if name == "substring" { return true }
+        if name == "string_concat" { return true }
+        if name == "string_split" { return true }
+        if name == "char_at" { return true }
+        if name == "char_code_at" { return true }
+        # I/O operations
+        if name == "print" { return true }
+        if name == "println" { return true }
+        if name == "format" { return true }
+        if name == "read_file" { return true }
+        if name == "write_file" { return true }
+        # Memory operations
+        if name == "heap_alloc" { return true }
+        if name == "heap_free" { return true }
+        # Parsing/conversion
+        if name == "parse_hex" { return true }
+        if name == "parse_int" { return true }
+        if name == "int_to_string" { return true }
+        if name == "json_encode" { return true }
+        if name == "json_decode" { return true }
+        # Time
+        if name == "time_now" { return true }
+        # Runtime
+        if name == "runtime_init" { return true }
+        if name == "scheduler_run" { return true }
+        if name == "scheduler_destroy" { return true }
+        return false
+      }
+
+      rule lower_call(call: CallExpr) -> string {
+        # Lower all arguments
+        let arg_temps: vec<string> = vec_new()
+        for arg: Expression in call.args {
+          let arg_temp = lower_expression(arg)
+          vec_push(arg_temps, arg_temp)
+        }
+
+        # Determine the full function name
+        # If it's a builtin, use the name as-is
+        # If it's a rule in current hyphal, prefix with rule_{hyphal}_
+        let func_name: string = call.name
+        if !is_builtin(call.name) {
+          if state.context.current_hyphal != "" {
+            func_name = format("rule_{}_{}", state.context.current_hyphal, call.name)
+          }
+        }
+
+        # Emit call instruction
+        let result_temp = fresh_temp()
+        add_instruction(Instruction::Call(CallInst {
+          dst: result_temp,
+          func: func_name,
+          args: arg_temps
+        }))
+
+        return result_temp
+      }
+
+      rule lower_field_access(access: FieldAccessExpr) -> string {
+        let object_temp = lower_expression(access.object)
+
+        # For now, assume object_temp is a struct pointer
+        # TODO: Look up struct layout and get field offset
+        let field_addr = fresh_temp()
+        add_instruction(Instruction::GetFieldAddr(GetFieldAddrInst {
+          dst: field_addr,
+          object: object_temp,
+          offset: 0  # TODO: Calculate actual offset
+        }))
+
+        let value_temp = fresh_temp()
+        add_instruction(Instruction::Load(LoadInst {
+          dst: value_temp,
+          addr: field_addr
+        }))
+
+        return value_temp
+      }
+
+      # -------------------------------------------------------------------------
+      # Dispatch Function Generation
+      # -------------------------------------------------------------------------
+
+      rule generate_dispatch_function(hyphal: HyphalDef) {
+        # Generate dispatch function: {hyphal}_dispatch(state_ptr, signal_ptr)
+        # This function switches on freq_id and calls appropriate rule handlers
+
+        # Reset function context
+        state.context.temp_counter = 0
+        state.context.label_counter = 0
+        vec_clear(state.current_basic_blocks)
+        vec_clear(state.current_instructions)
+
+        let func_name = format("{}_dispatch", hyphal.name)
+        state.context.current_function = func_name
+        state.context.current_hyphal = hyphal.name
+
+        # Parameters: (state_ptr: *AgentState, signal_ptr: *Signal)
+        let params: vec<Parameter> = vec_new()
+        vec_push(params, Parameter { name: "state_ptr", param_type: LIRType::Ptr })
+        vec_push(params, Parameter { name: "signal_ptr", param_type: LIRType::Ptr })
+
+        # Entry block: Load freq_id from signal
+        let entry_label = fresh_label()
+        start_basic_block(entry_label)
+
+        # Load freq_id (offset 0)
+        let freq_id_temp = fresh_temp()
+        add_instruction(Instruction::LoadField(LoadFieldInst {
+          dst: freq_id_temp,
+          object: "signal_ptr",
+          offset: 0
+        }))
+
+        # Group rules by frequency
+        let freq_rules = group_rules_by_frequency(hyphal.rules)
+
+        # Generate branches for each frequency
+        generate_frequency_dispatch(freq_rules, freq_id_temp, hyphal.name)
+
+        # Emit function
+        state.function_names_str = format("{}{};", state.function_names_str, func_name)
+        emit lir_function { name: func_name }
+        state.functions_emitted = state.functions_emitted + 1
+      }
+
+      rule group_rules_by_frequency(rules: vec<Rule>) -> map<string, vec<Rule>> {
+        let freq_map: map<string, vec<Rule>> = map_new()
+
+        for rule in rules {
+          match rule.trigger {
+            RuleTrigger::Signal(sig_match) => {
+              let freq_name = sig_match.frequency
+              if !map_contains_key(freq_map, freq_name) {
+                map_insert(freq_map, freq_name, vec_new())
+              }
+              let rule_list = map_get(freq_map, freq_name)
+              vec_push(rule_list, rule)
+              map_insert(freq_map, freq_name, rule_list)
+            }
+            _ => {
+              # Rest and Cycle triggers handled separately
+            }
+          }
+        }
+
+        return freq_map
+      }
+
+      rule generate_frequency_dispatch(freq_rules: map<string, vec<Rule>>, freq_id_temp: string, hyphal_name: string) {
+        # Generate switch-like structure with branches
+        let no_match_label = fresh_label()
+
+        # For each frequency, create a check and branch
+        for freq_name in map_keys(freq_rules) {
+          let freq_id = map_get(state.context.frequency_map, freq_name)
+          let freq_check_label = fresh_label()
+          let freq_handler_label = fresh_label()
+          let next_check_label = fresh_label()
+
+          # Check if freq_id matches
+          let cmp_temp = fresh_temp()
+          let freq_id_const = fresh_temp()
+          add_instruction(Instruction::Const(ConstInst {
+            dst: freq_id_const,
+            value: ConstValue::Int(freq_id),
+            const_type: LIRType::I32
+          }))
+          add_instruction(Instruction::CmpEq(CompareInst {
+            dst: cmp_temp,
+            lhs: freq_id_temp,
+            rhs: freq_id_const
+          }))
+
+          # Branch to handler if match, otherwise check next
+          add_terminator(Terminator::Branch(BranchTerm {
+            condition: cmp_temp,
+            true_label: freq_handler_label,
+            false_label: next_check_label
+          }))
+          finalize_current_block()
+
+          # Handler block: Try rules in order
+          start_basic_block(freq_handler_label)
+          let rules = map_get(freq_rules, freq_name)
+          generate_rule_dispatch_chain(rules, hyphal_name, freq_name, no_match_label)
+
+          # Next check block
+          start_basic_block(next_check_label)
+        }
+
+        # No match - drop signal
+        add_terminator(Terminator::Jump(JumpTerm { target: no_match_label }))
+        finalize_current_block()
+
+        # No match block
+        start_basic_block(no_match_label)
+        add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+        finalize_current_block()
+      }
+
+      rule generate_rule_dispatch_chain(rules: vec<Rule>, hyphal_name: string, freq_name: string, no_match_label: string) {
+        let done_label = fresh_label()
+        let rule_idx: u32 = 0
+
+        for rule in rules {
+          if has_guard(rule) {
+            # Rule with guard - check guard first
+            let guard_true_label = fresh_label()
+            let guard_false_label = fresh_label()
+
+            # Lower guard expression
+            state.context.current_trigger_frequency = freq_name
+            let guard_temp = lower_expression(rule.guard)
+
+            # Branch on guard
+            add_terminator(Terminator::Branch(BranchTerm {
+              condition: guard_temp,
+              true_label: guard_true_label,
+              false_label: guard_false_label
+            }))
+            finalize_current_block()
+
+            # Guard true - call rule function
+            start_basic_block(guard_true_label)
+            call_rule_function(hyphal_name, freq_name, rule_idx)
+            add_terminator(Terminator::Jump(JumpTerm { target: done_label }))
+            finalize_current_block()
+
+            # Guard false - try next rule
+            start_basic_block(guard_false_label)
+          } else {
+            # Rule without guard - always call
+            call_rule_function(hyphal_name, freq_name, rule_idx)
+            add_terminator(Terminator::Jump(JumpTerm { target: done_label }))
+            finalize_current_block()
+          }
+
+          rule_idx = rule_idx + 1
+        }
+
+        # No rule matched - jump to no_match
+        add_terminator(Terminator::Jump(JumpTerm { target: no_match_label }))
+        finalize_current_block()
+
+        # Done label
+        start_basic_block(done_label)
+        add_terminator(Terminator::Return(ReturnTerm { value: "" }))
+        finalize_current_block()
+      }
+
+      rule has_guard(rule: Rule) -> boolean {
+        match rule.guard {
+          Expression::None => false
+          _ => true
+        }
+      }
+
+      rule call_rule_function(hyphal_name: string, freq_name: string, rule_idx: u32) {
+        let func_name = format("{}_signal_{}_rule_{}", hyphal_name, freq_name, rule_idx)
+        add_instruction(Instruction::Call(CallInst {
+          dst: "",
+          func: func_name,
+          args: vec_from(["state_ptr", "signal_ptr"])
+        }))
+      }
+
+      # -------------------------------------------------------------------------
+      # Helpers
+      # -------------------------------------------------------------------------
+
+      rule fresh_temp() -> string {
+        let temp_name = format("%tmp{}", state.context.temp_counter)
+        state.context.temp_counter = state.context.temp_counter + 1
+        return temp_name
+      }
+
+      rule fresh_label() -> string {
+        let label_name = format("bb{}", state.context.label_counter)
+        state.context.label_counter = state.context.label_counter + 1
+        return label_name
+      }
+
+      # M2 Phase 2: Signal operation helper functions
+
+      rule fresh_signal_var() -> string {
+        let sig_name = format("%signal{}", state.context.signal_counter)
+        state.context.signal_counter = state.context.signal_counter + 1
+        return sig_name
+      }
+
+      rule fresh_payload_var() -> string {
+        let payload_name = format("%payload{}", state.context.payload_counter)
+        state.context.payload_counter = state.context.payload_counter + 1
+        return payload_name
+      }
+
+      rule get_current_agent_id() -> u32 {
+        # Return the current agent ID from context
+        # In compiled code, this will be a compile-time constant
+        return state.context.current_agent_id
+      }
+
+      rule get_frequency_id(frequency_name: string) -> u32 {
+        # Look up frequency ID from frequency map
+        let freq_id = map_get(state.context.frequency_map, frequency_name)
+        if freq_id == null {
+          # Frequency not found - should have been caught by type checker
+          return 0
+        }
+        return freq_id
+      }
+
+      rule start_basic_block(label: string) {
+        vec_clear(state.current_instructions)
+      }
+
+      rule add_instruction(inst: Instruction) {
+        vec_push(state.current_instructions, inst)
+      }
+
+      rule add_terminator(term: Terminator) {
+        # Store terminator for current block
+        state.current_terminator = term
+      }
+
+      rule finalize_current_block() {
+        # Add current block to function with stored terminator
+        let block = BasicBlock {
+          label: format("bb{}", vec_len(state.current_basic_blocks)),
+          instructions: state.current_instructions,
+          terminator: state.current_terminator
+        }
+        vec_push(state.current_basic_blocks, block)
+
+        # Reset for next block
+        vec_clear(state.current_instructions)
+      }
+
+      rule get_field_offset(layout: StructLayout, field_name: string) -> u32 {
+        for field_layout: FieldLayout in layout.fields {
+          if field_layout.name == field_name {
+            return field_layout.offset
+          }
+        }
+        return 0
+      }
+
+      rule vec_from(items: vec<string>) -> vec<string> {
+        return items
+      }
+    }
+

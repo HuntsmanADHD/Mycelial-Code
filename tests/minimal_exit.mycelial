@@ -1,0 +1,20 @@
+# Minimal test - just exit with a specific code
+network minimal {
+  frequencies {
+    done { }
+  }
+
+  hyphae {
+    hyphal Main {
+      state {
+        result: u32
+      }
+
+      on rest {
+        # Do some computation
+        state.result = 1 + 2 + 3 + 4 + 5
+        # result should be 15
+      }
+    }
+  }
+}

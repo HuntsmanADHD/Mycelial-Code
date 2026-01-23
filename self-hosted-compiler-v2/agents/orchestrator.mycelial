@@ -1,0 +1,460 @@
+    hyphal orchestrator {
+      state {
+        # Current compilation stage
+        stage: string                     # Current pipeline stage
+
+        # Input/output files
+        source_file: string               # Path to source .mycelial file
+        output_file: string               # Path to output binary
+        source_code: string               # Loaded source code
+
+        # Inter-agent buffers
+        tokens: vec<Token>                # Buffered tokens from lexer
+        token_count: u32                  # Token count
+
+        ast_items: vec<ProgramItem>       # AST items from parser
+        ast_node_count: u32               # AST node count
+
+        ir_instructions: vec<string>      # Buffered IR instructions (JSON)
+        ir_function_count: u32            # Function count
+        ir_struct_count: u32              # Struct count
+
+        asm_instructions: vec<string>     # Buffered assembly instructions
+        asm_instruction_count: u32        # Instruction count
+
+        machine_code_sections: map<string, vec<u8>>  # Section -> bytes
+        relocations: vec<string>          # Buffered relocations (JSON)
+        symbols: map<string, u64>         # Symbol table
+
+        elf_binary: vec<u8>               # Final ELF binary bytes
+
+        # Progress tracking
+        error_count: u32                  # Total errors
+        errors: vec<string>               # Error messages
+
+        # Timing
+        start_time: u64                   # Compilation start time
+        stage_times: map<string, u64>     # Per-stage timing
+      }
+
+      # Initialize orchestrator
+      on rest {
+        state.stage = "IDLE"
+        state.error_count = 0
+        state.token_count = 0
+        state.ast_node_count = 0
+        state.ir_function_count = 0
+        state.ir_struct_count = 0
+        state.asm_instruction_count = 0
+        state.tokens = vec_new()
+        state.ir_instructions = vec_new()
+        state.asm_instructions = vec_new()
+        state.machine_code_sections = map_new()
+        state.relocations = vec_new()
+        state.symbols = map_new()
+        state.errors = vec_new()
+        state.stage_times = map_new()
+      }
+
+      # --------------------------------------------------------------------------
+      # Main Compilation Entry Point
+      # --------------------------------------------------------------------------
+
+      on signal(compile_request, req) {
+        state.source_file = req.source_file
+        state.output_file = req.output_file
+        state.stage = "LEXING"
+        state.start_time = time_now()
+        state.error_count = 0
+
+        report status { message: format("Compiling: {}", req.source_file) }
+
+        # Read source file
+        state.source_code = read_file(req.source_file)
+
+        if string_len(state.source_code) == 0 {
+          emit compilation_error {
+            stage: "orchestrator",
+            message: format("Failed to read source file: {}", req.source_file),
+            line: 0,
+            column: 0
+          }
+          state.stage = "ERROR"
+          return
+        }
+
+        report status { message: "  -> Lexing..." }
+
+        # Start lexer
+        emit lex_request {
+          source: state.source_code,
+          filename: req.source_file
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Lexer -> Parser Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer tokens from lexer
+      on signal(token, t) {
+        vec_push(state.tokens, t)
+        state.token_count = state.token_count + 1
+      }
+
+      # Lexer complete - trigger parser
+      on signal(lex_complete, lc) {
+        map_insert(state.stage_times, "lexing", time_now() - state.start_time)
+
+        if lc.error_count > 0 {
+          state.error_count = state.error_count + lc.error_count
+          report status { message: format("  -> Lexer errors: {}", lc.error_count) }
+
+          # Abort on lexer errors
+          state.stage = "ERROR"
+          emit compilation_error {
+            stage: "lexer",
+            message: format("Lexer failed with {} errors", lc.error_count),
+            line: 0,
+            column: 0
+          }
+          return
+        }
+
+        report status { message: format("  -> Lexed {} tokens", lc.token_count) }
+        report status { message: "  -> Parsing..." }
+
+        state.stage = "PARSING"
+
+        # Forward tokens to parser
+        for tok in state.tokens {
+          emit token {
+            type: tok.type,
+            value: tok.value,
+            line: tok.line,
+            column: tok.column
+          }
+        }
+
+        # Signal lexer complete to parser
+        emit lex_complete {
+          token_count: lc.token_count,
+          error_count: lc.error_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Parser -> IR Generator Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer AST nodes
+      on signal(ast_node, node) {
+        state.ast_node_count = state.ast_node_count + 1
+      }
+
+      # Receive complete AST
+      on signal(ast_complete, ast) {
+        # Store items directly for forwarding to IR generator
+        state.ast_items = ast.items
+        state.ast_node_count = vec_len(ast.items)
+      }
+
+      # Handle parse errors
+      on signal(parse_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("Parse error at {}:{}: {} (expected {}, found {})",
+          err.line, err.column, err.message, err.expected, err.found))
+      }
+
+      # Parser complete - trigger IR generator
+      on signal(parse_complete, pc) {
+        map_insert(state.stage_times, "parsing", time_now() - state.start_time)
+
+        report status { message: format("  -> Parsed program") }
+
+        if pc.error_count > 0 {
+          state.error_count = state.error_count + pc.error_count
+          report status { message: format("  -> Parse errors: {}", pc.error_count) }
+
+          # Print each detailed error
+          let i = 0
+          while i < vec_len(state.errors) {
+            report status { message: format("    {}", vec_get(state.errors, i)) }
+            i = i + 1
+          }
+
+          # Abort compilation on any parse errors
+          state.stage = "ERROR"
+          emit compilation_error {
+            stage: "parser",
+            message: format("Parse failed with {} errors", pc.error_count),
+            line: 0,
+            column: 0
+          }
+          return
+        }
+
+        report status { message: "  -> Generating IR..." }
+
+        state.stage = "IR_GENERATION"
+
+        # Forward AST to IR generator
+        emit ast_complete {
+          items: state.ast_items
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # IR Generator -> Code Generator Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer IR nodes
+      on signal(ir_node, node) {
+        vec_push(state.ir_instructions, json_encode(node))
+      }
+
+      # Track function boundaries
+      on signal(ir_function_start, fstart) {
+        state.ir_function_count = state.ir_function_count + 1
+        # Forward to code generator
+        emit ir_function_start {
+          name: fstart.name,
+          params: fstart.params,
+          return_type: fstart.return_type
+        }
+      }
+
+      on signal(ir_function_end, fend) {
+        emit ir_function_end { name: fend.name }
+      }
+
+      # Receive LIR functions (alternative format)
+      on signal(lir_function, func) {
+        state.ir_function_count = state.ir_function_count + 1
+        # Forward to code generator directly
+        emit lir_function { name: func.name }
+      }
+
+      # Receive LIR structs
+      on signal(lir_struct, st) {
+        state.ir_struct_count = state.ir_struct_count + 1
+      }
+
+      # Handle IR errors
+      on signal(ir_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("IR error: {} at {}", err.message, err.location))
+      }
+
+      # IR generation complete - trigger code generator
+      on signal(ir_complete, ic) {
+        map_insert(state.stage_times, "ir_generation", time_now() - state.start_time)
+
+        report status { message: format("  -> Generated {} IR instructions, {} functions, {} structs",
+          ic.instruction_count, ic.function_count, ic.struct_count) }
+
+        report status { message: "  -> Generating x86-64 code..." }
+
+        state.stage = "CODE_GENERATION"
+
+        # Signal IR complete to code generator (including function names as delimited string)
+        emit ir_complete {
+          instruction_count: ic.instruction_count,
+          function_count: ic.function_count,
+          struct_count: ic.struct_count,
+          function_names_str: ic.function_names_str
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Code Generator -> Assembler Transition
+      # --------------------------------------------------------------------------
+
+      # Buffer assembly instructions
+      on signal(asm_instruction, instr) {
+        vec_push(state.asm_instructions, json_encode(instr))
+        state.asm_instruction_count = state.asm_instruction_count + 1
+
+        # Forward to assembler
+        emit asm_instruction {
+          label: instr.label,
+          mnemonic: instr.mnemonic,
+          operands: instr.operands
+        }
+      }
+
+      # Buffer data directives
+      on signal(asm_data, data) {
+        emit asm_data {
+          label: data.label,
+          data_type: data.data_type,
+          value: data.value,
+          section: data.section
+        }
+      }
+
+      # Buffer section directives
+      on signal(asm_section, sect) {
+        emit asm_section { name: sect.name }
+      }
+
+      # Code generation complete - trigger assembler
+      on signal(codegen_complete, cc) {
+        map_insert(state.stage_times, "code_generation", time_now() - state.start_time)
+
+        report status { message: format("  -> Generated {} assembly instructions, {} functions",
+          cc.instruction_count, cc.function_count) }
+
+        report status { message: "  -> Assembling..." }
+
+        state.stage = "ASSEMBLING"
+
+        # Signal codegen complete to assembler
+        emit codegen_complete {
+          instruction_count: cc.instruction_count,
+          function_count: cc.function_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Assembler -> Linker Transition
+      # --------------------------------------------------------------------------
+
+      # Receive machine code
+      on signal(machine_code, mc) {
+        let section_bytes = map_get_or_default(state.machine_code_sections, mc.section, vec_new())
+        # mc.bytes is already a vec<u8>, no need to hex_decode
+        for b in mc.bytes {
+          vec_push(section_bytes, b)
+        }
+        map_insert(state.machine_code_sections, mc.section, section_bytes)
+
+        # Forward to linker
+        emit machine_code {
+          section: mc.section,
+          offset: mc.offset,
+          bytes: mc.bytes
+        }
+      }
+
+      # Receive relocations
+      on signal(relocation, rel) {
+        vec_push(state.relocations, json_encode(rel))
+
+        # Forward to linker
+        emit relocation {
+          section: rel.section,
+          offset: rel.offset,
+          symbol: rel.symbol,
+          reloc_type: rel.reloc_type,
+          addend: rel.addend
+        }
+      }
+
+      # Receive symbol definitions
+      on signal(symbol_def, sym) {
+        map_insert(state.symbols, sym.name, sym.offset)
+
+        # Forward to linker
+        emit symbol_def {
+          name: sym.name,
+          section: sym.section,
+          offset: sym.offset,
+          is_global: sym.is_global
+        }
+      }
+
+      # Receive section info
+      on signal(section_info, info) {
+        emit section_info {
+          name: info.name,
+          size: info.size,
+          flags: info.flags
+        }
+      }
+
+      # Handle assembly errors
+      on signal(asm_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("Assembly error at line {}: {} (instruction: {})",
+          err.line, err.message, err.instruction))
+        report status { message: format("  ASM ERROR: {} (instruction: {})", err.message, err.instruction) }
+      }
+
+      # Assembly complete - trigger linker
+      on signal(asm_complete, ac) {
+        map_insert(state.stage_times, "assembling", time_now() - state.start_time)
+
+        report status { message: format("  -> Assembled {} bytes, {} symbols, {} relocations",
+          ac.total_bytes, ac.symbol_count, ac.relocation_count) }
+
+        report status { message: "  -> Linking..." }
+
+        state.stage = "LINKING"
+
+        # Signal assembly complete to linker
+        emit asm_complete {
+          total_bytes: ac.total_bytes,
+          symbol_count: ac.symbol_count,
+          relocation_count: ac.relocation_count
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Linker Output Handling
+      # --------------------------------------------------------------------------
+
+      # Handle link errors
+      on signal(link_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("Link error: {} (symbol: {})", err.message, err.symbol))
+
+        state.stage = "ERROR"
+
+        emit compilation_error {
+          stage: "linker",
+          message: err.message,
+          line: 0,
+          column: 0
+        }
+      }
+
+      # Linking complete - finalize
+      on signal(link_complete, lc) {
+        map_insert(state.stage_times, "linking", time_now() - state.start_time)
+
+        let total_time = time_now() - state.start_time
+
+        state.stage = "COMPLETE"
+
+        report status { message: format("  -> Linked: {} ({} bytes)", lc.output_file, lc.file_size) }
+        report status { message: format("  -> Entry point: 0x{:X}", lc.entry_point) }
+        report status { message: "" }
+        report status { message: format("Compilation complete in {} ms", total_time) }
+
+        if state.error_count == 0 {
+          report status { message: format("SUCCESS: {} -> {}", state.source_file, state.output_file) }
+        } else {
+          report status { message: format("WARNINGS: {} errors encountered", state.error_count) }
+        }
+
+        # Emit final completion signal
+        emit compilation_complete {
+          output_file: lc.output_file,
+          file_size: lc.file_size,
+          success: state.error_count == 0
+        }
+      }
+
+      # --------------------------------------------------------------------------
+      # Error Handling
+      # --------------------------------------------------------------------------
+
+      on signal(compilation_error, err) {
+        state.error_count = state.error_count + 1
+        vec_push(state.errors, format("[{}] {}:{}: {}",
+          err.stage, err.line, err.column, err.message))
+
+        report status { message: format("ERROR [{}]: {}", err.stage, err.message) }
+      }
+    }

@@ -1,0 +1,25 @@
+# Test rule with parameters and return type
+network params_return_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        state.x = 1
+        let result = my_func("test", 5)
+      }
+
+      rule my_func(name: string, value: u32) -> boolean {
+        return true
+      }
+    }
+  }
+}

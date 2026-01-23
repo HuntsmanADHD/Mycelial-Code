@@ -1,0 +1,18 @@
+# Simplest possible print test
+network simple_print {
+  frequencies {
+    start { }
+  }
+
+  hyphae {
+    hyphal Main {
+      state {
+        x: u32
+      }
+
+      on rest {
+        print("Hello!\n")
+      }
+    }
+  }
+}

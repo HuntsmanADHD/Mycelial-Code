@@ -1,0 +1,98 @@
+# Larger test with many rules
+network rule_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        a: u32
+        b: u32
+        c: u32
+        d: u32
+        e: u32
+        f: u32
+        g: u32
+        h: u32
+      }
+
+      on rest {
+        test_func1()
+        test_func2()
+        test_func3()
+        test_func4()
+        test_func5()
+        test_func6()
+        test_func7()
+        test_func8()
+        test_func9()
+        test_func10()
+      }
+
+      rule test_func1() {
+        state.a = 1
+        state.b = 2
+        state.c = 3
+      }
+
+      rule test_func2() {
+        state.a = 4
+        state.b = 5
+        state.c = 6
+      }
+
+      rule test_func3() {
+        state.a = 7
+        state.b = 8
+        state.c = 9
+      }
+
+      rule test_func4() {
+        state.d = 10
+        state.e = 11
+        state.f = 12
+      }
+
+      rule test_func5() {
+        state.d = 13
+        state.e = 14
+        state.f = 15
+      }
+
+      rule test_func6() {
+        state.d = 16
+        state.e = 17
+        state.f = 18
+      }
+
+      rule test_func7() {
+        state.g = 19
+        state.h = 20
+      }
+
+      rule test_func8() {
+        state.g = 21
+        state.h = 22
+      }
+
+      rule test_func9() {
+        state.g = 23
+        state.h = 24
+      }
+
+      rule test_func10() {
+        state.a = 25
+        state.b = 26
+        state.c = 27
+        state.d = 28
+        state.e = 29
+        state.f = 30
+        state.g = 31
+        state.h = 32
+      }
+    }
+  }
+}

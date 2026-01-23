@@ -1,0 +1,27 @@
+# Test with for loop
+network for_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  constants {
+    ITEMS = [1, 2, 3, 4, 5]
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        sum: u32
+      }
+
+      on rest {
+        state.sum = 0
+        for item in ITEMS {
+          state.sum = state.sum + item
+        }
+      }
+    }
+  }
+}

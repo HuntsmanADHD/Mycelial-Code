@@ -1,0 +1,975 @@
+  types {
+
+    # Token type enumeration
+    enum TokenType {
+      # Keywords
+      NETWORK, FREQUENCIES, FREQUENCY, HYPHAE, HYPHAL,
+      STATE, ON, SIGNAL, EMIT, REPORT, SPAWN, DIE,
+      SOCKET, FRUITING_BODY, TOPOLOGY, CONFIG,
+      IF, ELSE, WHERE, REST, CYCLE, LET, FOR, IN, WHILE, RULE, RETURN, BREAK, CONTINUE, MATCH, AS,
+      IMPORT, TYPES, STRUCT, ENUM, CONSTANTS,
+      TRUE, FALSE,
+      # Type keywords
+      U8, U16, U32, U64, I8, I16, I32, I64, F32, F64,
+      STRING_TYPE, BINARY_TYPE, BOOLEAN_TYPE,
+      VEC, QUEUE, MAP,
+      # Literals
+      NUMBER, STRING_LIT, IDENTIFIER,
+      # Operators
+      PLUS, MINUS, STAR, SLASH, PERCENT,
+      EQ, NE, LT, GT, LE, GE,
+      AND, OR, NOT, AT,
+      ASSIGN, ARROW, FAT_ARROW, COLON, DOUBLE_COLON, DOT, DOTDOT, COMMA, SEMICOLON,
+      PIPE, AMPERSAND, SHIFT_LEFT, SHIFT_RIGHT,
+      # Delimiters
+      LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
+      # Special
+      EOF, ERROR
+    }
+
+    # Token structure
+    struct Token {
+      type: TokenType
+      value: string
+      line: u32
+      column: u32
+    }
+
+    # Compilation stage enumeration
+    enum CompileStage {
+      IDLE,
+      LEXING,
+      PARSING,
+      IR_GENERATION,
+      CODE_GENERATION,
+      ASSEMBLING,
+      LINKING,
+      COMPLETE,
+      ERROR
+    }
+
+    # -------------------------------------------------------------------------
+    # Parser AST Types
+    # -------------------------------------------------------------------------
+
+    struct SourceLocation {
+      line: u32
+      column: u32
+    }
+
+    struct ParseError {
+      message: string
+      location: SourceLocation
+      expected: string
+      found: string
+    }
+
+    # -------------------------------------------------------------------------
+    # AST Node Types
+    # -------------------------------------------------------------------------
+
+    enum ASTNodeType {
+      PROGRAM, NETWORK_DEF, FREQUENCY_DEF, HYPHAL_DEF, STATE_BLOCK,
+      STATE_FIELD, RULE, TOPOLOGY_RULE, SOCKET_DEF, FRUITING_BODY_DEF,
+      STATEMENT, EXPRESSION, TYPE_REF, LITERAL
+    }
+
+    # -------------------------------------------------------------------------
+    # Program (Top Level)
+    # -------------------------------------------------------------------------
+
+    struct Program {
+      items: vec<ProgramItem>
+      location: SourceLocation
+    }
+
+    enum ProgramItem {
+      Frequency(FrequencyDef),
+      Network(NetworkDef),
+      Import(ImportDef),
+      None
+    }
+
+    # -------------------------------------------------------------------------
+    # Definitions
+    # -------------------------------------------------------------------------
+
+    struct ImportDef {
+      path: string
+      location: SourceLocation
+    }
+
+    struct FrequencyDef {
+      name: string
+      fields: vec<FieldDef>
+      location: SourceLocation
+    }
+
+    struct FieldDef {
+      name: string
+      field_type: TypeRef
+      location: SourceLocation
+    }
+
+    struct NetworkDef {
+      name: string
+      frequencies: vec<FrequencyDef>
+      types: vec<TypeDef>
+      constants: vec<ConstantDef>
+      hyphae: vec<HyphalDef>
+      topology: vec<TopologyItem>
+      config: vec<ConfigItem>
+      location: SourceLocation
+    }
+
+    struct TypeDef {
+      name: string
+      type_kind: TypeDefKind
+      location: SourceLocation
+    }
+
+    enum TypeDefKind {
+      Struct(vec<FieldDef>),
+      Enum(vec<EnumVariant>)
+    }
+
+    struct EnumVariant {
+      name: string
+      fields: vec<FieldDef>
+      location: SourceLocation
+    }
+
+    struct ConstantDef {
+      name: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct ConfigItem {
+      key: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    # -------------------------------------------------------------------------
+    # Hyphal (Agent) Definitions
+    # -------------------------------------------------------------------------
+
+    struct HyphalDef {
+      name: string
+      frequency_ref: string       # Optional: "frequency X"
+      state: StateBlock
+      rules: vec<Rule>
+      methods: vec<MethodDef>     # rule definitions inside hyphal
+      location: SourceLocation
+    }
+
+    struct MethodDef {
+      name: string
+      params: vec<ParamDef>
+      return_type: TypeRef
+      body: vec<Statement>
+      location: SourceLocation
+    }
+
+    struct ParamDef {
+      name: string
+      param_type: TypeRef
+      location: SourceLocation
+    }
+
+    struct StateBlock {
+      fields: vec<StateField>
+      location: SourceLocation
+    }
+
+    struct StateField {
+      name: string
+      field_type: TypeRef
+      init_value: Expression      # Optional initial value
+      location: SourceLocation
+    }
+
+    struct Rule {
+      trigger: RuleTrigger
+      guard: Expression           # Optional "where" predicate
+      body: vec<Statement>
+      location: SourceLocation
+    }
+
+    enum RuleTrigger {
+      Signal(SignalMatch),
+      Rest,
+      Cycle(u32)
+    }
+
+    struct SignalMatch {
+      frequency: string
+      binding: string             # Variable binding name
+      location: SourceLocation
+    }
+
+    # -------------------------------------------------------------------------
+    # Topology
+    # -------------------------------------------------------------------------
+
+    enum TopologyItem {
+      Spawn(SpawnDef),
+      Socket(SocketDef),
+      FruitingBody(FruitingBodyDef)
+    }
+
+    struct SpawnDef {
+      hyphal: string
+      instance: string
+      location: SourceLocation
+    }
+
+    struct SocketDef {
+      from: string
+      to: string
+      frequency: string
+      location: SourceLocation
+    }
+
+    struct FruitingBodyDef {
+      name: string
+      location: SourceLocation
+    }
+
+    # -------------------------------------------------------------------------
+    # Statements
+    # -------------------------------------------------------------------------
+
+    enum Statement {
+      Let(LetStatement),
+      Assignment(AssignmentStatement),
+      Conditional(ConditionalStatement),
+      Emit(EmitStatement),
+      Report(ReportStatement),
+      Spawn(SpawnStatement),
+      Die(DieStatement),
+      ForLoop(ForLoopStatement),
+      WhileLoop(WhileLoopStatement),
+      Return(ReturnStatement),
+      Break(BreakStatement),
+      Continue(ContinueStatement),
+      Match(MatchStatement),
+      Expression(ExpressionStatement),
+      None
+    }
+
+    struct LetStatement {
+      name: string
+      type_annotation: TypeRef    # Optional
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct AssignmentStatement {
+      target: AssignmentTarget
+      value: Expression
+      location: SourceLocation
+    }
+
+    enum AssignmentTarget {
+      Variable(string),
+      StateField(string),
+      FieldAccess(Expression, string),
+      IndexAccess(Expression, Expression)
+    }
+
+    struct ConditionalStatement {
+      condition: Expression
+      then_body: vec<Statement>
+      else_body: vec<Statement>   # Empty if no else
+      location: SourceLocation
+    }
+
+    struct EmitStatement {
+      frequency: string
+      fields: vec<FieldInit>
+      location: SourceLocation
+    }
+
+    struct FieldInit {
+      name: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct ReportStatement {
+      metric: string
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct SpawnStatement {
+      hyphal: string
+      instance: string
+      location: SourceLocation
+    }
+
+    struct DieStatement {
+      location: SourceLocation
+    }
+
+    struct ForLoopStatement {
+      variable: string
+      variable2: string              # Second variable for tuple destructuring (empty if not used)
+      variable_type: TypeRef
+      iterable: Expression
+      body: vec<Statement>
+      location: SourceLocation
+    }
+
+    struct WhileLoopStatement {
+      condition: Expression
+      body: vec<Statement>
+      location: SourceLocation
+    }
+
+    struct ReturnStatement {
+      value: Expression           # Optional
+      location: SourceLocation
+    }
+
+    struct BreakStatement {
+      location: SourceLocation
+    }
+
+    struct ContinueStatement {
+      location: SourceLocation
+    }
+
+    struct MatchStatement {
+      subject: Expression
+      arms: vec<MatchArm>
+      location: SourceLocation
+    }
+
+    struct MatchArm {
+      pattern: Pattern
+      body: vec<Statement>
+      location: SourceLocation
+    }
+
+    enum Pattern {
+      Literal(LiteralPattern),
+      Identifier(string),
+      EnumVariant(EnumVariantPattern),
+      Tuple(TuplePattern),
+      Wildcard,
+      Or(vec<Pattern>)
+    }
+
+    struct TuplePattern {
+      elements: vec<Pattern>
+    }
+
+    struct LiteralPattern {
+      value: Literal
+    }
+
+    struct EnumVariantPattern {
+      enum_type: string
+      variant: string
+      bindings: vec<string>
+    }
+
+    struct ExpressionStatement {
+      expression: Expression
+      location: SourceLocation
+    }
+
+    # -------------------------------------------------------------------------
+    # Expressions
+    # -------------------------------------------------------------------------
+
+    enum Expression {
+      Literal(LiteralExpr),
+      Identifier(IdentifierExpr),
+      EnumVariant(EnumVariantExpr),
+      BinaryOp(BinaryOpExpr),
+      UnaryOp(UnaryOpExpr),
+      FieldAccess(FieldAccessExpr),
+      IndexAccess(IndexAccessExpr),
+      Call(CallExpr),
+      MethodCall(MethodCallExpr),
+      StateAccess(StateAccessExpr),
+      SignalAccess(SignalAccessExpr),
+      ListLiteral(ListLiteralExpr),
+      MapLiteral(MapLiteralExpr),
+      StructLiteral(StructLiteralExpr),
+      Grouped(GroupedExpr),
+      Range(RangeExpr),
+      IfExpr(IfExpression),
+      Cast(CastExpr),
+      Tuple(TupleExpr),
+      MatchExpr(MatchExpression),
+      None
+    }
+
+    struct MatchExpression {
+      subject: Expression
+      arms: vec<MatchArm>
+      location: SourceLocation
+    }
+
+    struct TupleExpr {
+      elements: vec<Expression>
+      location: SourceLocation
+    }
+
+    struct CastExpr {
+      expr: Expression
+      target_type: TypeRef
+      location: SourceLocation
+    }
+
+    struct LiteralExpr {
+      value: Literal
+      location: SourceLocation
+    }
+
+    struct IdentifierExpr {
+      name: string
+      location: SourceLocation
+    }
+
+    struct EnumVariantExpr {
+      enum_type: string
+      variant: string
+      data: vec<Expression>    # Empty = no data, one element = has data
+      location: SourceLocation
+    }
+
+    struct BinaryOpExpr {
+      op: BinaryOperator
+      left: Expression
+      right: Expression
+      location: SourceLocation
+    }
+
+    enum BinaryOperator {
+      # Arithmetic
+      Add, Sub, Mul, Div, Mod,
+      # Comparison
+      Eq, Ne, Lt, Gt, Le, Ge,
+      # Logical
+      And, Or,
+      # Bitwise
+      BitAnd, BitOr, Shl, Shr
+    }
+
+    struct UnaryOpExpr {
+      op: UnaryOperator
+      operand: Expression
+      location: SourceLocation
+    }
+
+    enum UnaryOperator {
+      Not, Neg, Pos
+    }
+
+    struct FieldAccessExpr {
+      object: Expression
+      field: string
+      location: SourceLocation
+    }
+
+    struct IndexAccessExpr {
+      object: Expression
+      index: Expression
+      location: SourceLocation
+    }
+
+    struct CallExpr {
+      name: string
+      args: vec<Expression>
+      location: SourceLocation
+    }
+
+    struct MethodCallExpr {
+      object: Expression
+      method: string
+      args: vec<Expression>
+      location: SourceLocation
+    }
+
+    struct StateAccessExpr {
+      field: string
+      location: SourceLocation
+    }
+
+    struct SignalAccessExpr {
+      binding: string
+      field: string
+      location: SourceLocation
+    }
+
+    struct ListLiteralExpr {
+      elements: vec<Expression>
+      location: SourceLocation
+    }
+
+    struct MapLiteralExpr {
+      entries: vec<MapEntry>
+      location: SourceLocation
+    }
+
+    struct MapEntry {
+      key: Expression
+      value: Expression
+      location: SourceLocation
+    }
+
+    struct StructLiteralExpr {
+      type_name: string
+      fields: vec<FieldInit>
+      location: SourceLocation
+    }
+
+    struct GroupedExpr {
+      inner: Expression
+      location: SourceLocation
+    }
+
+    struct RangeExpr {
+      start: Expression
+      end: Expression
+      location: SourceLocation
+    }
+
+    struct IfExpression {
+      condition: Expression
+      then_expr: Expression
+      else_expr: Expression
+      location: SourceLocation
+    }
+
+    # -------------------------------------------------------------------------
+    # Literals
+    # -------------------------------------------------------------------------
+
+    enum Literal {
+      Number(i64),
+      Float(f64),
+      String(string),
+      Bool(boolean),
+      Null
+    }
+
+    # -------------------------------------------------------------------------
+    # Type References
+    # -------------------------------------------------------------------------
+
+    enum TypeRef {
+      Primitive(PrimitiveType),
+      Vec(TypeRef),
+      Queue(TypeRef),
+      Map(TypeRef, TypeRef),
+      Custom(string),
+      None
+    }
+
+    enum PrimitiveType {
+      U8, U16, U32, U64,
+      I8, I16, I32, I64,
+      F32, F64,
+      Boolean, String, Binary
+    }
+
+    # -------------------------------------------------------------------------
+    # IR Generator Types
+    # -------------------------------------------------------------------------
+
+    # Low-level IR types
+    enum LIRType {
+      I8, I16, I32, I64,
+      F32, F64,
+      Ptr,
+      Void
+    }
+
+    # Field layout information for struct types
+    struct FieldLayout {
+      name: string
+      offset: u32
+      size: u32
+      field_type: LIRType
+    }
+
+    # Struct field information (for IR emission)
+    struct StructField {
+      name: string
+      offset: u32
+      size: u32
+      field_type: LIRType
+    }
+
+    # Struct layout information
+    struct StructLayout {
+      fields: vec<FieldLayout>
+      total_size: u32
+      alignment: u32
+    }
+
+    # IR generation context
+    struct IRGenContext {
+      current_function: string
+      current_hyphal: string
+      current_trigger_frequency: string
+      temp_counter: u32
+      label_counter: u32
+      signal_counter: u32
+      payload_counter: u32
+      current_agent_id: u32
+      frequency_map: map<string, u32>
+      struct_layouts: map<string, StructLayout>
+      local_vars: map<string, string>
+    }
+
+    # -------------------------------------------------------------------------
+    # Low-Level IR (LIR) Types
+    # -------------------------------------------------------------------------
+
+    # LIR function parameter
+    struct Parameter {
+      name: string
+      param_type: LIRType
+    }
+
+    # LIR basic block
+    struct BasicBlock {
+      label: string
+      instructions: vec<Instruction>
+      terminator: Terminator
+    }
+
+    # IR operation codes (opcodes)
+    enum IROpcode {
+      LABEL,
+      MOVE,
+      CONST,
+      LOAD,
+      STORE,
+      LOAD_FIELD,
+      STORE_FIELD,
+      ADD,
+      SUB,
+      MUL,
+      DIV,
+      MOD,
+      AND,
+      OR,
+      XOR,
+      SHL,
+      SHR,
+      NOT,
+      NEG,
+      CMP_EQ,
+      CMP_NE,
+      CMP_LT,
+      CMP_LE,
+      CMP_GT,
+      CMP_GE,
+      CALL,
+      GET_FIELD_ADDR,
+      ALLOC,
+      FREE,
+      BITCAST,
+      PHI,
+      JUMP,
+      BRANCH,
+      RET,
+      SIGNAL_ALLOC,
+      SIGNAL_SET_PAYLOAD,
+      SIGNAL_SET_FIELD,
+      SIGNAL_EMIT
+    }
+
+    # Flattened IR instruction representation (used by register allocator)
+    # This is a simplified struct with common fields across all instruction types
+    struct IRInstruction {
+      op: IROpcode             # Operation code
+      dst: string              # Destination register/variable (empty if none)
+      src1: string             # First source operand (empty if none)
+      src2: string             # Second source operand (empty if none)
+      imm: i64                 # Immediate value (for constants)
+      label: string            # Label (for jumps/branches)
+      type_size: u32           # Size/offset for memory operations
+    }
+
+    # Live interval for register allocation
+    struct LiveInterval {
+      vreg: string             # Virtual register name
+      start: u32               # Start position
+      end: u32                 # End position
+      assigned: string         # Assigned physical register (empty if not assigned)
+      spill_slot: i32          # Spill slot index (-1 if not spilled)
+    }
+
+    # x86-64 relocation types (forward declaration for Section)
+    enum RelocationType {
+      R_X86_64_32,             # Direct 32-bit zero extended
+      R_X86_64_32S,            # Direct 32-bit sign extended
+      R_X86_64_64,             # Direct 64-bit
+      R_X86_64_PC32,           # PC-relative 32-bit signed
+      R_X86_64_PLT32           # PC-relative PLT32
+    }
+
+    # Section relocation entry (forward declaration for Section)
+    struct SectionRelocation {
+      offset: u32              # Offset within section
+      symbol: string           # Symbol name to relocate against
+      reloc_type: RelocationType # Relocation type
+      addend: i64              # Addend value
+    }
+
+    # ELF section for linker
+    struct Section {
+      name: string             # Section name (e.g., ".text", ".data")
+      data: vec<u8>            # Section data bytes
+      relocations: vec<SectionRelocation> # Relocation entries
+    }
+
+    # Assembly instruction line
+    struct AsmLine {
+      label: string            # Label (empty if none)
+      mnemonic: string         # Instruction mnemonic (e.g., "mov", "add")
+      operands: vec<string>    # Operands list
+      line_num: u32            # Source line number
+    }
+
+    # Symbol table entry
+    struct Symbol {
+      name: string             # Symbol name
+      section: string          # Section name (e.g., ".text")
+      offset: u32              # Offset within section
+      is_global: boolean       # Is globally visible
+      is_defined: boolean      # Is defined (vs. external reference)
+    }
+
+    # Symbol entry for linker (includes resolved virtual address)
+    struct SymbolEntry {
+      name: string             # Symbol name
+      section: string          # Section name (e.g., ".text")
+      offset: u32              # Offset within section
+      is_global: boolean       # Is globally visible
+      vaddr: u64               # Virtual address (after layout)
+    }
+
+    # Relocation entry for linker
+    struct RelocationEntry {
+      section: string          # Section containing relocation
+      offset: u32              # Offset within section
+      symbol: string           # Symbol name to relocate against
+      reloc_type: RelocationType # Relocation type
+      addend: i64              # Addend value
+    }
+
+    # Data directive line
+    struct DataLine {
+      label: string            # Label (empty if none)
+      data_type: string        # Data type (e.g., ".byte", ".word", ".quad")
+      value: string            # Data value
+      line_num: u32            # Source line number
+      section: string          # Section this data belongs to
+    }
+
+    # Instruction relocation entry
+    struct InstrRelocation {
+      offset: u8               # Offset within instruction
+      symbol: string           # Symbol name to relocate against
+      reloc_type: RelocationType # Relocation type
+      addend: i64              # Addend value
+    }
+
+    # Encoded machine code instruction
+    struct EncodedInstruction {
+      bytes: vec<u8>           # Machine code bytes
+      relocations: vec<InstrRelocation> # Relocation entries
+    }
+
+    # Register information
+    struct RegisterInfo {
+      name: string             # Register name (e.g., "rax", "rbx")
+      code: u8                 # Register code (0-15)
+      is_extended: boolean     # Whether this is an extended register (r8-r15)
+      size: u8                 # Register size in bytes (1, 2, 4, 8)
+    }
+
+    # Memory operand
+    struct MemoryOperand {
+      base: string             # Base register name
+      index: string            # Index register name (empty if none)
+      scale: u8                # Scale factor (1, 2, 4, 8)
+      displacement: i32        # Displacement value
+      is_rip_relative: boolean # Whether this is RIP-relative addressing
+      symbol: string           # Symbol name for RIP-relative addressing (empty if numeric)
+    }
+
+    # Assembly operand types
+    enum Operand {
+      Reg(RegisterInfo),       # Register operand
+      Imm(i64),                # Immediate value
+      Mem(MemoryOperand),      # Memory operand
+      Label(string)            # Label reference
+    }
+
+    # LIR instruction enum
+    enum Instruction {
+      Move(MoveInst),
+      Load(LoadInst),
+      Store(StoreInst),
+      LoadField(LoadFieldInst),
+      StoreField(StoreFieldInst),
+      Add(BinaryInst),
+      Sub(BinaryInst),
+      Mul(BinaryInst),
+      Div(BinaryInst),
+      Mod(BinaryInst),
+      And(BinaryInst),
+      Or(BinaryInst),
+      Xor(BinaryInst),
+      Shl(BinaryInst),
+      Shr(BinaryInst),
+      Not(UnaryInst),
+      Neg(UnaryInst),
+      CmpEq(CompareInst),
+      CmpNe(CompareInst),
+      CmpLt(CompareInst),
+      CmpLe(CompareInst),
+      CmpGt(CompareInst),
+      CmpGe(CompareInst),
+      Call(CallInst),
+      Const(ConstInst),
+      GetFieldAddr(GetFieldAddrInst),
+      Alloc(AllocInst),
+      SignalAlloc(SignalAllocInst),
+      SignalSetPayload(SignalSetPayloadInst),
+      SignalSetField(SignalSetFieldInst),
+      SignalEmit(SignalEmitInst)
+    }
+
+    struct MoveInst {
+      dst: string
+      src: string
+    }
+
+    struct LoadInst {
+      dst: string
+      addr: string
+    }
+
+    struct StoreInst {
+      addr: string
+      src: string
+    }
+
+    struct LoadFieldInst {
+      dst: string
+      object: string
+      offset: u32
+    }
+
+    struct StoreFieldInst {
+      object: string
+      offset: u32
+      src: string
+    }
+
+    struct BinaryInst {
+      dst: string
+      lhs: string
+      rhs: string
+    }
+
+    struct UnaryInst {
+      dst: string
+      operand: string
+    }
+
+    struct CompareInst {
+      dst: string
+      lhs: string
+      rhs: string
+    }
+
+    struct CallInst {
+      dst: string
+      func: string
+      args: vec<string>
+    }
+
+    struct ConstInst {
+      dst: string
+      value: ConstValue
+      const_type: LIRType
+    }
+
+    enum ConstValue {
+      Int(i64),
+      Float(f64),
+      String(string),
+      Bool(boolean)
+    }
+
+    struct GetFieldAddrInst {
+      dst: string
+      object: string
+      offset: u32
+    }
+
+    struct AllocInst {
+      dst: string
+      size: u32
+    }
+
+    struct SignalAllocInst {
+      dst: string
+      frequency_id: u32
+      source_agent_id: u32
+    }
+
+    struct SignalSetPayloadInst {
+      signal: string
+      payload: string
+      payload_size: u32
+    }
+
+    struct SignalSetFieldInst {
+      payload: string
+      field_offset: u32
+      value: string
+    }
+
+    struct SignalEmitInst {
+      signal: string
+      frequency_id: u32
+    }
+
+    # Terminator enum
+    enum Terminator {
+      Jump(JumpTerm),
+      Branch(BranchTerm),
+      Return(ReturnTerm)
+    }
+
+    struct JumpTerm {
+      target: string
+    }
+
+    struct BranchTerm {
+      condition: string
+      true_label: string
+      false_label: string
+    }
+
+    struct ReturnTerm {
+      value: string
+    }
+  }
+
+  # ============================================================================

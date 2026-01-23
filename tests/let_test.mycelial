@@ -1,0 +1,34 @@
+# Test let statement code generation
+network let_test {
+  frequencies {
+    result {
+      value: i64
+    }
+  }
+
+  hyphae {
+    hyphal Main {
+      state {
+        answer: i64
+      }
+
+      on signal(startup, _s) {
+        compute_answer()
+      }
+
+      rule compute_answer() {
+        let x: i64 = 10
+        let y: i64 = 20
+        let z: i64 = x + y
+        println(format("Result: {}", z))
+      }
+    }
+  }
+
+  topology {
+    spawn Main as M
+    fruiting_body input
+    fruiting_body output
+    socket input -> M (frequency: startup)
+  }
+}

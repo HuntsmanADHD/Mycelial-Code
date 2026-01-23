@@ -1,0 +1,34 @@
+# Minimal test with rules
+network rule_test {
+  frequencies {
+    test_sig {
+      value: u32
+    }
+  }
+
+  hyphae {
+    hyphal TestAgent {
+      state {
+        x: u32
+      }
+
+      on rest {
+        test_func1()
+        test_func2()
+        test_func3()
+      }
+
+      rule test_func1() {
+        state.x = 1
+      }
+
+      rule test_func2() {
+        state.x = 2
+      }
+
+      rule test_func3() {
+        state.x = 3
+      }
+    }
+  }
+}

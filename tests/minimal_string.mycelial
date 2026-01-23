@@ -1,0 +1,18 @@
+# Minimal string test - hardcode a very short string
+network minimal_string {
+  frequencies {
+    start { }
+  }
+
+  hyphae {
+    hyphal Main {
+      state {
+        x: u32
+      }
+
+      on rest {
+        print("A")
+      }
+    }
+  }
+}
