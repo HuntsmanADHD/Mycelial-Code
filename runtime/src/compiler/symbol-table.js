@@ -190,7 +190,12 @@ class SymbolTable {
 
       if (hyphalDef.state && Array.isArray(hyphalDef.state)) {
         for (const field of hyphalDef.state) {
-          const size = this.getTypeSize(field.type);
+          // IMPORTANT: Gen0 stores ALL state fields as 8-byte values:
+          // - Primitives: 8 bytes (padded)
+          // - Pointers (string, vec, map): 8 bytes
+          // - Struct types: 8 bytes (heap pointer)
+          // This matches the code generator which uses 64-bit mov for all state access.
+          const size = 8;  // Always 8 bytes for state fields
           stateFields.push({
             name: field.name,
             type: field.type,
@@ -364,10 +369,13 @@ class SymbolTable {
     if (type === 'u64' || type === 'i64' || type === 'f64') return 8;
     if (type === 'string' || type === 'vec' || type === 'map') return 8; // Pointer
 
-    // Handle custom struct types
+    // Handle custom struct types - Gen0 stores ALL structs as pointers
     const customType = this.types.get(type);
-    if (customType) {
-      return customType.size;
+    if (customType && customType.kind === 'struct') {
+      return 8;  // Pointer size, not full struct size
+    }
+    if (customType && customType.kind === 'enum') {
+      return 8;  // Enums are also stored as pointers to tagged unions
     }
 
     // Default to pointer size

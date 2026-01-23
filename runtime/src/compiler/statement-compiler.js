@@ -8,6 +8,9 @@
  * @date 2026-01-15
  */
 
+// Set to true to enable debug output
+const DEBUG_STMT = process.env.MYCELIAL_DEBUG === '1';
+
 const { ExpressionCompiler } = require('./expression-compiler.js');
 
 class StatementCompiler {
@@ -168,22 +171,10 @@ class StatementCompiler {
       const field = agent?.stateFields?.find(f => f.name === fieldName);
       const fieldType = field?.type;
 
-      // Check if the field type is an inline struct (not a pointer type)
-      const typeInfo = this.symbolTable.types.get(fieldType);
-      if (typeInfo && typeInfo.kind === 'struct') {
-        // Inline struct - copy contents from heap-allocated struct to state memory
-        // rax contains pointer to heap-allocated struct
-        lines.push(`    # Copy inline struct ${fieldType} to state.${fieldName}`);
-        lines.push(`    mov rbx, rax          # Source struct pointer`);
-        lines.push(`    lea rcx, [r12 + ${fieldOffset}]  # Destination in state`);
-
-        // Copy each 8-byte chunk of the struct
-        const structSize = typeInfo.size;
-        for (let offset = 0; offset < structSize; offset += 8) {
-          lines.push(`    mov rax, [rbx + ${offset}]`);
-          lines.push(`    mov [rcx + ${offset}], rax`);
-        }
-      } else {
+      // NOTE: Gen0 runtime stores ALL structs as pointers, not embedded.
+      // Even if a field type is a struct, we just store the 8-byte pointer.
+      // The previous code incorrectly tried to copy struct contents as if embedded.
+      {
         // Determine mov instruction based on type size
         let movInstr = 'mov';
         let reg = 'rax';
@@ -214,7 +205,7 @@ class StatementCompiler {
 
       // Debug: Check if varName is null or undefined
       if (varName === null || varName === undefined) {
-        console.error('[DEBUG] Assignment target with null/undefined name:', JSON.stringify(stmt.target));
+        DEBUG_STMT && console.error('[DEBUG] Assignment target with null/undefined name:', JSON.stringify(stmt.target));
         throw new Error(`Assignment target has null/undefined name. Full target: ${JSON.stringify(stmt.target)}`);
       }
 
@@ -518,7 +509,7 @@ class StatementCompiler {
       }
 
       // Then print newline
-      lines.push(`    lea rdi, [newline_str(%rip)]`);
+      lines.push(`    lea rdi, [rip + newline_str]`);
       lines.push(`    call builtin_print`);
 
     } else if (stmt.type === 'print') {
@@ -755,6 +746,7 @@ class StatementCompiler {
           }
         } else if (pattern.type === 'enum-variant') {
           // Enum variant pattern: compare with ordinal value
+          // All enum variants are now pointers to tagged unions
           const enumType = pattern.enumType;
           const variantName = pattern.variant;
 
@@ -770,20 +762,14 @@ class StatementCompiler {
 
           const ordinal = variantInfo.ordinal;
 
-          // Check if simple enum or tagged union
-          if (!variantInfo.dataType) {
-            // Simple enum - just compare ordinals
-            lines.push(`    cmp rax, ${ordinal}   # Compare with ${enumType}::${variantName}`);
-            lines.push(`    je ${bodyLabel}`);
-          } else {
-            // Tagged union - load and compare tag
-            lines.push(`    # Check tagged union for ${enumType}::${variantName}`);
-            lines.push(`    mov rcx, [rax]        # Load tag from offset 0`);
-            lines.push(`    cmp rcx, ${ordinal}   # Compare tag`);
-            lines.push(`    je ${bodyLabel}`);
-          }
+          // Always dereference - all enum variants are now pointers
+          lines.push(`    # Check tagged union for ${enumType}::${variantName}`);
+          lines.push(`    mov rcx, [rax]        # Load tag from offset 0`);
+          lines.push(`    cmp rcx, ${ordinal}   # Compare tag`);
+          lines.push(`    je ${bodyLabel}`);
         } else if (pattern.type === 'enum-pattern') {
           // Enum pattern with bindings
+          // All enum variants are now pointers to tagged unions
           const enumType = pattern.enumType;
           const variantName = pattern.variant;
           const bindings = pattern.bindings || [];
@@ -799,21 +785,13 @@ class StatementCompiler {
           }
 
           const ordinal = variantInfo.ordinal;
-          const dataType = variantInfo.dataType;
 
-          // Check if this is a simple enum (no data) or tagged union
-          if (!dataType) {
-            // Simple enum - just compare ordinals
-            lines.push(`    cmp rax, ${ordinal}   # Compare with ${enumType}::${variantName}`);
-            lines.push(`    je ${bodyLabel}`);
-          } else {
-            // Tagged union - need to load and check tag
-            lines.push(`    # Check tagged union for ${enumType}::${variantName}`);
-            lines.push(`    mov rbx, rax          # Save union pointer`);
-            lines.push(`    mov rcx, [rax]        # Load tag from offset 0`);
-            lines.push(`    cmp rcx, ${ordinal}   # Compare tag with ${variantName} ordinal`);
-            lines.push(`    je ${bodyLabel}`);
-          }
+          // Always dereference - all enum variants are now pointers
+          lines.push(`    # Check tagged union for ${enumType}::${variantName}`);
+          lines.push(`    mov rbx, rax          # Save union pointer`);
+          lines.push(`    mov rcx, [rax]        # Load tag from offset 0`);
+          lines.push(`    cmp rcx, ${ordinal}   # Compare tag with ${variantName} ordinal`);
+          lines.push(`    je ${bodyLabel}`);
         } else if (pattern.type === 'tuple-pattern') {
           // Tuple patterns match against tuple values (compiled as vectors)
           // Need to check each sub-pattern, especially enum variant tags
@@ -842,7 +820,6 @@ class StatementCompiler {
               }
 
               const ordinal = variantInfo.ordinal;
-              const hasData = !!variantInfo.dataType;
 
               // Extract element i from tuple
               lines.push(`    # Check tuple element ${i}: ${enumType}::${variantName}`);
@@ -850,16 +827,10 @@ class StatementCompiler {
               lines.push(`    mov rsi, ${i}         # Element index`);
               lines.push(`    call builtin_vec_get`);
 
-              if (hasData) {
-                // Tagged union - load and check tag
-                lines.push(`    mov rcx, [rax]        # Load tag from offset 0`);
-                lines.push(`    cmp rcx, ${ordinal}   # Compare with ${variantName} ordinal`);
-                lines.push(`    jne ${nextCheckLabel} # If not matching, try next arm`);
-              } else {
-                // Simple enum - compare value directly
-                lines.push(`    cmp rax, ${ordinal}   # Compare with ${variantName} ordinal`);
-                lines.push(`    jne ${nextCheckLabel} # If not matching, try next arm`);
-              }
+              // Always dereference - all enum variants are now pointers
+              lines.push(`    mov rcx, [rax]        # Load tag from offset 0`);
+              lines.push(`    cmp rcx, ${ordinal}   # Compare with ${variantName} ordinal`);
+              lines.push(`    jne ${nextCheckLabel} # If not matching, try next arm`);
             }
             // For simple identifier patterns, no runtime check needed
           }
@@ -1291,10 +1262,10 @@ class StatementCompiler {
       const fieldOffset = this.symbolTable.getStateFieldOffset(this.agentId, fieldName);
 
       if (fieldOffset === null) {
-        console.error('[DEBUG] compileFieldAccessAddress: unknown state field');
-        console.error('[DEBUG] Field name:', fieldName);
-        console.error('[DEBUG] Full expression:', JSON.stringify(expr));
-        console.error('[DEBUG] Agent ID:', this.agentId);
+        DEBUG_STMT && console.error('[DEBUG] compileFieldAccessAddress: unknown state field');
+        DEBUG_STMT && console.error('[DEBUG] Field name:', fieldName);
+        DEBUG_STMT && console.error('[DEBUG] Full expression:', JSON.stringify(expr));
+        DEBUG_STMT && console.error('[DEBUG] Agent ID:', this.agentId);
         throw new Error(`Unknown state field: ${fieldName}`);
       }
 
@@ -1306,8 +1277,8 @@ class StatementCompiler {
 
       // Debug: Check if varName is null or undefined
       if (varName === null || varName === undefined) {
-        console.error('[DEBUG] Field access on variable with null/undefined name:', JSON.stringify(expr.object));
-        console.error('[DEBUG] Full field access expression:', JSON.stringify(expr));
+        DEBUG_STMT && console.error('[DEBUG] Field access on variable with null/undefined name:', JSON.stringify(expr.object));
+        DEBUG_STMT && console.error('[DEBUG] Full field access expression:', JSON.stringify(expr));
         throw new Error(`Field access on variable with null/undefined name. Full expression: ${JSON.stringify(expr)}`);
       }
 

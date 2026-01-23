@@ -43,9 +43,10 @@ MycelialVector* builtin_map_values(MycelialMap* map);
 
 // String operations
 uint32_t builtin_string_len(const char* s);
-uint8_t builtin_char_at(const char* s, uint32_t index);
+char* builtin_char_at(const char* s, uint32_t index);
+uint8_t builtin_char_code_at(const char* s, uint32_t index);
 char* builtin_char_to_string(uint8_t ch);
-uint8_t builtin_string_char_at(const char* s, uint32_t index);  // Alias
+char* builtin_string_char_at(const char* s, uint32_t index);  // Alias
 char* builtin_format(const char* fmt, ...);
 char* builtin_string_slice(const char* s, uint32_t start, uint32_t end);
 char* builtin_string_trim(const char* s);

@@ -353,8 +353,11 @@ class Runtime {
         fs.copyFileSync(objPath, this.outputPath);
         this.logProgress('CODEGEN', `Object file written to ${this.outputPath}`);
       } else {
-        // Full compilation: link with ld to create executable
-        execSync(`ld ${objPath} -o ${this.outputPath}`, { stdio: 'pipe' });
+        // Full compilation: link with ld using dynamic libc
+        // Include builtins for runtime support functions
+        const builtinsPath = path.join(__dirname, '../c/complete-builtins.o');
+        // Use dynamic linker and link against libc for builtin functions
+        execSync(`ld -dynamic-linker /lib64/ld-linux-x86-64.so.2 ${objPath} ${builtinsPath} -lc -o ${this.outputPath}`, { stdio: 'pipe' });
         this.logProgress('CODEGEN', `Linked to ${this.outputPath}`);
       }
 

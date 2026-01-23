@@ -77,26 +77,9 @@ static int is_known_vector(void* addr) {
  * Append item to vector
  */
 void builtin_vec_push(MycelialVector* vec, void* item) {
-    static int push_count = 0;
-    static void* target_vec = NULL;  // The crash vector
-    push_count++;
-
     if (!vec) {
         fprintf(stderr, "ERROR: NULL vector in vec_push\n");
         exit(1);
-    }
-
-    // Look for a vector that starts receiving value 50 after pushes start
-    // (This is the crash vector pattern)
-    if (target_vec == NULL && (long)item == 50 && vec->length == 0 && push_count > 50) {
-        target_vec = vec;
-        fprintf(stderr, "[TARGET_VEC] Found crash vector at %p (push #%d)\n", (void*)vec, push_count);
-    }
-
-    // Track all pushes to the target vector
-    if (vec == target_vec) {
-        fprintf(stderr, "[TARGET] Push #%d: value=%ld to vec=%p len=%zu\n",
-                push_count, (long)item, (void*)vec, vec->length);
     }
 
     // Resize if needed
@@ -324,11 +307,9 @@ void builtin_map_set(MycelialMap* map, void* key, void* value) {
  * map_get(map: map<K, V>, key: K) -> V
  * Get value by key
  */
-static int map_get_count = 0;
 void* builtin_map_get(MycelialMap* map, void* key) {
-    map_get_count++;
     if (!map) {
-        fprintf(stderr, "ERROR: NULL map in map_get (call #%d)\n", map_get_count);
+        fprintf(stderr, "ERROR: NULL map in map_get\n");
         exit(1);
     }
     for (size_t i = 0; i < map->keys->length; i++) {
@@ -337,22 +318,11 @@ void* builtin_map_get(MycelialMap* map, void* key) {
 
         if (strcmp(existing_key, search_key) == 0) {
             void* result = map->values->data[i];
-            // Trace map_get around potential crash point
-            if (map_get_count >= 450 && map_get_count <= 480) {
-                fprintf(stderr, "[MAP_GET] #%d key='%s' value=%p\n",
-                        map_get_count, search_key, result);
-                fflush(stderr);
-            }
             return result;
         }
     }
 
     // Key not found - return NULL
-    if (map_get_count >= 450 && map_get_count <= 480) {
-        fprintf(stderr, "[MAP_GET] #%d key='%s' NOT FOUND\n",
-                map_get_count, (char*)key);
-        fflush(stderr);
-    }
     return NULL;
 }
 
@@ -461,6 +431,17 @@ char* builtin_char_at(const char* s, uint32_t index) {
 }
 
 /**
+ * char_code_at(s: string, index: u32) -> u8
+ * Get the byte value at index (NOT a string)
+ * Returns 0 if s is NULL or if index is out of bounds
+ */
+uint8_t builtin_char_code_at(const char* s, uint32_t index) {
+    if (!s) return 0;
+    // No bounds check for performance - caller should ensure valid index
+    return (uint8_t)s[index];
+}
+
+/**
  * format(fmt: string, ...) -> string
  * Format string with {} placeholders (Mycelial-style)
  * Each {} is replaced with the next argument (string or integer)
@@ -523,12 +504,16 @@ char* builtin_format(const char* fmt, ...) {
                 char num_buf[32];
                 int num_len;
 
-                // Simple heuristic: if in valid pointer range AND first byte is printable
-                if (arg >= 0x10000 && arg < 0x800000000000ULL) {
+                // Simple heuristic: if in valid pointer range AND first byte is printable or null
+                // Use 0x400000 (4MB) as lower bound to avoid treating integers as pointers
+                // ELF binaries typically load at 0x400000+, heap is much higher
+                // This threshold allows integers up to ~4 million without being misinterpreted
+                if (arg >= 0x400000 && arg < 0x800000000000ULL) {
                     const char* maybe_str = (const char*)arg;
                     // Check if first byte looks like start of a string
+                    // Accept null (empty string) or printable ASCII
                     unsigned char first = *((unsigned char*)maybe_str);
-                    if (first >= 32 && first < 127) {
+                    if (first == 0 || (first >= 32 && first < 127)) {
                         // Likely a string - copy up to 256 chars
                         size_t i = 0;
                         while (maybe_str[i] && i < 256 &&
@@ -788,10 +773,10 @@ MycelialVector* builtin_string_split(const char* s, const char* delimiter) {
 
 /**
  * parse_u8(s: string) -> u8
- * Parse string to unsigned 8-bit integer
+ * Parse string to unsigned 8-bit integer (supports hex with 0x prefix)
  */
 uint8_t builtin_parse_u8(const char* s) {
-    long value = strtol(s, NULL, 10);
+    long value = strtol(s, NULL, 0);
     if (value < 0 || value > 255) {
         fprintf(stderr, "ERROR: parse_u8: value out of range: %ld\n", value);
         exit(1);
@@ -801,18 +786,18 @@ uint8_t builtin_parse_u8(const char* s) {
 
 /**
  * parse_u32(s: string) -> u32
- * Parse string to unsigned 32-bit integer
+ * Parse string to unsigned 32-bit integer (supports hex with 0x prefix)
  */
 uint32_t builtin_parse_u32(const char* s) {
-    return (uint32_t)strtoul(s, NULL, 10);
+    return (uint32_t)strtoul(s, NULL, 0);
 }
 
 /**
  * parse_i32(s: string) -> i32
- * Parse string to signed 32-bit integer
+ * Parse string to signed 32-bit integer (supports hex with 0x prefix)
  */
 int32_t builtin_parse_i32(const char* s) {
-    return (int32_t)strtol(s, NULL, 10);
+    return (int32_t)strtol(s, NULL, 0);
 }
 
 /**
@@ -852,6 +837,14 @@ void builtin_write_file(const char* path, MycelialVector* data) {
     fclose(f);
 
     printf("✅ Wrote %zu bytes to %s\n", data->length, path);
+}
+
+/**
+ * write_bytes(path: string, data: vec<u8>)
+ * Alias for write_file - both write binary data from vec<u8>
+ */
+void builtin_write_bytes(const char* path, MycelialVector* data) {
+    builtin_write_file(path, data);
 }
 
 /**
@@ -920,12 +913,51 @@ bool builtin_is_numeric(const char* s) {
 }
 
 /**
+ * is_numeric_string(s: string) -> bool
+ * Alias for is_numeric - check if string is a valid number
+ */
+bool builtin_is_numeric_string(const char* s) {
+    return builtin_is_numeric(s);
+}
+
+/**
+ * max(a: i64, b: i64) -> i64
+ * Return the maximum of two values
+ */
+int64_t builtin_max(int64_t a, int64_t b) {
+    return (a > b) ? a : b;
+}
+
+/**
+ * min(a: i64, b: i64) -> i64
+ * Return the minimum of two values
+ */
+int64_t builtin_min(int64_t a, int64_t b) {
+    return (a < b) ? a : b;
+}
+
+/**
+ * abs(a: i64) -> i64
+ * Return the absolute value
+ */
+int64_t builtin_abs(int64_t a) {
+    return (a < 0) ? -a : a;
+}
+
+/**
  * string_eq(s1: string, s2: string) -> bool
  * String equality comparison
  */
 // Return type is int (not bool) to ensure GCC generates proper 32-bit return values
 // With bool, GCC only sets AL and leaves upper bits of RAX with garbage
+static int string_eq_count = 0;
 int builtin_string_eq(const char* s1, const char* s2) {
+    string_eq_count++;
+    if (string_eq_count % 1000 == 0) {
+        fprintf(stderr, "[DEBUG] string_eq #%d: '%s' vs '%s'\n", string_eq_count,
+                s1 ? s1 : "(null)", s2 ? s2 : "(null)");
+        fflush(stderr);
+    }
     // Handle NULL strings
     if (!s1 || !s2) {
         return (s1 == s2) ? 1 : 0;
@@ -960,10 +992,10 @@ int64_t builtin_string_cmp(const char* s1, const char* s2) {
 
 /**
  * parse_i64(s: string) -> i64
- * Parse 64-bit signed integer
+ * Parse 64-bit signed integer (supports hex with 0x prefix, octal with 0 prefix)
  */
 int64_t builtin_parse_i64(const char* s) {
-    return (int64_t)strtoll(s, NULL, 10);
+    return (int64_t)strtoll(s, NULL, 0);
 }
 
 /**
@@ -971,20 +1003,33 @@ int64_t builtin_parse_i64(const char* s) {
  * Allocate memory from heap (using malloc)
  */
 void* builtin_heap_alloc(uint64_t size) {
-    static int alloc_count = 0;
-    alloc_count++;
     void* ptr = malloc((size_t)size);
     if (!ptr) {
         fprintf(stderr, "ERROR: Out of memory (failed to allocate %lu bytes)\n",
                 (unsigned long)size);
         exit(1);
     }
-    // Trace RegisterInfo (11 bytes) and Operand enum (16 bytes) allocations
-    if ((size == 11 || size == 16) && alloc_count >= 500 && alloc_count <= 520) {
-        fprintf(stderr, "[ALLOC] #%d size=%lu ptr=%p\n", alloc_count, (unsigned long)size, ptr);
-        fflush(stderr);
-    }
     return ptr;
+}
+
+/**
+ * u32_to_string(n: u32) -> string
+ * Convert unsigned 32-bit integer to string
+ */
+char* builtin_u32_to_string(uint32_t n) {
+    char* buf = malloc(16);
+    snprintf(buf, 16, "%u", n);
+    return buf;
+}
+
+/**
+ * i64_to_string(n: i64) -> string
+ * Convert signed 64-bit integer to string
+ */
+char* builtin_i64_to_string(int64_t n) {
+    char* buf = malloc(24);
+    snprintf(buf, 24, "%ld", n);
+    return buf;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1081,6 +1126,39 @@ uint64_t builtin_time_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+// Global argc/argv - set by init_argv() called from _start
+static int64_t local_argc = 0;
+static char** local_argv = NULL;
+
+/**
+ * init_argv(argc: i64, argv: ptr) - Initialize command line args
+ * Called from _start before main()
+ */
+void init_argv(int64_t argc_val, char** argv_val) {
+    local_argc = argc_val;
+    local_argv = argv_val;
+}
+
+/**
+ * get_argc() -> i64
+ * Return the number of command line arguments
+ */
+int64_t builtin_get_argc(void) {
+    return local_argc;
+}
+
+/**
+ * get_argv(index: i64) -> string
+ * Return the command line argument at the given index
+ * Returns empty string if index is out of bounds
+ */
+const char* builtin_get_argv(int64_t index) {
+    if (index < 0 || index >= local_argc || local_argv == NULL) {
+        return "";
+    }
+    return local_argv[index];
 }
 
 /**

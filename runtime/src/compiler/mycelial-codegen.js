@@ -16,6 +16,9 @@
  * @date 2026-01-15
  */
 
+// Set to true to enable debug output
+const DEBUG_CODEGEN = process.env.MYCELIAL_DEBUG === '1';
+
 const { SymbolTable } = require('./symbol-table.js');
 const { HandlerCodegen } = require('./handler-codegen.js');
 const { SchedulerCodegen } = require('./scheduler-codegen.js');
@@ -41,7 +44,7 @@ class MycelialCodegen {
    */
   generate() {
     if (this.options.verbose) {
-      console.error('[CODEGEN] Starting code generation...');
+      DEBUG_CODEGEN && console.error('[CODEGEN] Starting code generation...');
     }
 
     // Phase 1: Build symbol table
@@ -107,14 +110,14 @@ class MycelialCodegen {
       const handlerGen = new HandlerCodegen(this.symbolTable, agentId, this.sharedLabelCounter);
       const handlers = handlerGen.generateAllHandlers();
 
-      console.error(`[DEBUG] After generateAllHandlers for ${agentId}:`);
-      console.error(`[DEBUG]   handlerGen.stmtCompiler.exprCompiler.stringLiterals =`,
+      DEBUG_CODEGEN && console.error(`[DEBUG] After generateAllHandlers for ${agentId}:`);
+      DEBUG_CODEGEN && console.error(`[DEBUG]   handlerGen.stmtCompiler.exprCompiler.stringLiterals =`,
         handlerGen.stmtCompiler.exprCompiler.stringLiterals);
 
       for (const handler of handlers) {
         this.assembly.push(...handler.code);
         // Collect string literals from this handler
-        console.error(`[DEBUG]   handler.name = ${handler.name}, handler.stringLiterals =`, handler.stringLiterals);
+        DEBUG_CODEGEN && console.error(`[DEBUG]   handler.name = ${handler.name}, handler.stringLiterals =`, handler.stringLiterals);
         if (handler.stringLiterals) {
           allStringLiterals.push(...handler.stringLiterals);
         }
@@ -132,7 +135,7 @@ class MycelialCodegen {
     }
     const deduplicatedLiterals = Array.from(uniqueLiterals.values());
 
-    console.error(`[DEBUG] Total string literals collected: ${allStringLiterals.length}, unique: ${deduplicatedLiterals.length}`, deduplicatedLiterals);
+    DEBUG_CODEGEN && console.error(`[DEBUG] Total string literals collected: ${allStringLiterals.length}, unique: ${deduplicatedLiterals.length}`, deduplicatedLiterals);
 
     // Store string literals for later use in data section
     this.stringLiterals = deduplicatedLiterals;
@@ -210,7 +213,7 @@ class MycelialCodegen {
     this.assembly.push('heap_end:');
     this.assembly.push('    .skip 8                  # End of heap');
     this.assembly.push('heap_arena:');
-    this.assembly.push('    .skip 65536              # 64KB heap for signal payloads');
+    this.assembly.push('    .skip 104857600          # 100MB heap to match heap_end initialization');
     this.assembly.push('');
   }
 

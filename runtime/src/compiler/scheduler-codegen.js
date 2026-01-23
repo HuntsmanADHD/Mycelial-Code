@@ -16,7 +16,7 @@ class SchedulerCodegen {
     this.symbolTable = symbolTable;
     this.maxSignalsPerCycle = 1000;
     this.signalStructSize = 64; // Bytes per signal (8 byte header + 56 byte payload)
-    this.queueCapacity = 1000; // Max signals per queue
+    this.queueCapacity = 100000; // Max signals per queue (increased for self-compilation with 57k+ tokens)
   }
 
   /**
@@ -66,33 +66,16 @@ class SchedulerCodegen {
     lines.push(`    # Stack layout: [argc][argv[0]][argv[1]]...`);
     lines.push(`    pop rdi                  # rdi = argc`);
     lines.push(`    mov rsi, rsp             # rsi = argv`);
+    lines.push(`    push rdi                 # Save argc`);
+    lines.push(`    push rsi                 # Save argv`);
+    lines.push(`    call init_argv           # Initialize argc/argv for builtins`);
+    lines.push(`    pop rsi                  # Restore argv`);
+    lines.push(`    pop rdi                  # Restore argc`);
     lines.push(`    call parse_cli_args      # Parse and store args`);
     lines.push(``);
     lines.push(`    # Initialize program`);
     lines.push(`    call init_agents         # REST phase: initialize all agents`);
     lines.push(`    call inject_initial      # SENSE phase: inject initial signal(s)`);
-    lines.push(`    call tidal_cycle_loop    # ACT phase: run until completion`);
-    lines.push(`    call exit_program        # Exit cleanly`);
-    lines.push(``);
-    lines.push(`    # Parse command-line arguments`);
-    lines.push(`    # Stack layout: [argc][argv[0]][argv[1]]...`);
-    lines.push(`    pop rdi                  # rdi = argc`);
-    lines.push(`    mov rsi, rsp             # rsi = argv`);
-    lines.push(`    call parse_cli_args      # Parse and store args`);
-    lines.push(``);
-    lines.push(`    # Debug: print after CLI parse`);
-    lines.push(`    lea rdi, [cli_parsed_msg]`);
-    lines.push(`    call builtin_println`);
-    lines.push(``);
-    lines.push(`    # Initialize program`);
-    lines.push(`    call init_agents         # REST phase: initialize all agents`);
-    lines.push(`    # Debug: print after init`);
-    lines.push(`    lea rdi, [init_done_msg]`);
-    lines.push(`    call builtin_println`);
-    lines.push(`    call inject_initial      # SENSE phase: inject initial signal(s)`);
-    lines.push(`    # Debug: print before tidal loop`);
-    lines.push(`    lea rdi, [starting_tidal_msg]`);
-    lines.push(`    call builtin_println`);
     lines.push(`    call tidal_cycle_loop    # ACT phase: run until completion`);
     lines.push(`    call exit_program        # Exit cleanly`);
     lines.push(``);
@@ -119,7 +102,7 @@ class SchedulerCodegen {
     lines.push(`    # Initialize heap`);
     lines.push(`    lea rax, [heap_arena]`);
     lines.push(`    mov [heap_ptr], rax`);
-    lines.push(`    lea rax, [heap_arena + 65536]  # 64KB heap`);
+    lines.push(`    lea rax, [heap_arena + 104857600]  # 100MB heap`);
     lines.push(`    mov [heap_end], rax`);
     lines.push(``);
 
@@ -279,7 +262,7 @@ class SchedulerCodegen {
     // Main loop
     lines.push(`.cycle_start:`);
     lines.push(`    # Check if we've exceeded max cycles (safety)`);
-    lines.push(`    cmp r12, 10000`);
+    lines.push(`    cmp r12, 100000`);
     lines.push(`    jge .cycle_max_reached`);
     lines.push(``);
 

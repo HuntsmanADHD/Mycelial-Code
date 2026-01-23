@@ -13,6 +13,9 @@
  * @date 2026-01-15
  */
 
+// Set to true to enable debug output
+const DEBUG_HANDLER = process.env.MYCELIAL_DEBUG === '1';
+
 const { StatementCompiler } = require('./statement-compiler.js');
 
 class HandlerCodegen {
@@ -243,11 +246,11 @@ class HandlerCodegen {
 
     // Add parameters as local variables to calculate stack space needed
     const argRegs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9'];
-    console.error(`[DEBUG] Rule ${ruleName} has ${rule.params.length} params:`, JSON.stringify(rule.params));
+    DEBUG_HANDLER && console.error(`[DEBUG] Rule ${ruleName} has ${rule.params.length} params:`, JSON.stringify(rule.params));
     for (let i = 0; i < rule.params.length; i++) {
       const param = rule.params[i];
       // Pass type information for parameters so field access works
-      console.error(`[DEBUG] Adding param ${param.name} with type ${param.type}`);
+      DEBUG_HANDLER && console.error(`[DEBUG] Adding param ${param.name} with type ${param.type}`);
       this.stmtCompiler.exprCompiler.addLocalVar(param.name, 8, param.type);
     }
 

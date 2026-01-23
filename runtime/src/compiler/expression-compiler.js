@@ -15,6 +15,9 @@
  * @date 2026-01-15
  */
 
+// Set to true to enable debug output
+const DEBUG_EXPR = process.env.MYCELIAL_DEBUG === '1';
+
 class ExpressionCompiler {
   constructor(symbolTable, agentId, sharedLabelCounter = null) {
     this.symbolTable = symbolTable;
@@ -183,7 +186,7 @@ class ExpressionCompiler {
 
     // Debug: Check if varName is null or undefined
     if (varName === null || varName === undefined) {
-      console.error('[DEBUG] Variable expression with null/undefined name:', JSON.stringify(expr));
+      DEBUG_EXPR && console.error('[DEBUG] Variable expression with null/undefined name:', JSON.stringify(expr));
       throw new Error(`Variable expression has null/undefined name. Full expression: ${JSON.stringify(expr)}`);
     }
 
@@ -198,7 +201,7 @@ class ExpressionCompiler {
       lines.push(`    mov rax, [rbp - ${offset}]`);
     } else {
       const err = new Error(`Unknown variable: ${varName}`);
-      console.error('[DEBUG] Stack trace for unknown variable error:');
+      DEBUG_EXPR && console.error('[DEBUG] Stack trace for unknown variable error:');
       console.error(err.stack);
       throw err;
     }
@@ -234,8 +237,8 @@ class ExpressionCompiler {
           const fieldOffset = this.symbolTable.getStateFieldOffset(this.agentId, expr.field);
           if (fieldOffset === null) {
             console.error(`[DEBUG] Failed state field access: state.${expr.field} in agent ${this.agentId}`);
-            console.error('[DEBUG] Available state fields:', Array.from(this.symbolTable.agents.get(this.agentId)?.state?.keys() || []));
-            console.error('[DEBUG] Full expression:', JSON.stringify(expr));
+            DEBUG_EXPR && console.error('[DEBUG] Available state fields:', Array.from(this.symbolTable.agents.get(this.agentId)?.state?.keys() || []));
+            DEBUG_EXPR && console.error('[DEBUG] Full expression:', JSON.stringify(expr));
             throw new Error(`Unknown state field: ${expr.field}`);
           }
           const fieldType = this.symbolTable.getStateFieldType(this.agentId, expr.field);
@@ -253,8 +256,8 @@ class ExpressionCompiler {
             // Check if this is an inline struct type (not a pointer type)
             const typeInfo = this.symbolTable.types.get(fieldType);
             if (typeInfo && typeInfo.kind === 'struct') {
-              // Inline struct - get the ADDRESS of the struct, not load its content
-              lines.push(`    lea rax, [r12 + ${fieldOffset}]  # Get address of inline struct state.${expr.field}`);
+              // Struct field - load the pointer (Gen0 stores all structs as pointers at runtime)
+              lines.push(`    mov rax, [r12 + ${fieldOffset}]  # Load struct pointer state.${expr.field}`);
             } else {
               // Pointer type (string, vec, map, etc.) - load the pointer value
               lines.push(`    mov rax, [r12 + ${fieldOffset}]  # Load state field (pointer/64-bit)`);
@@ -284,8 +287,8 @@ class ExpressionCompiler {
             // Check if this is an inline struct type (not a pointer type)
             const typeInfo = this.symbolTable.types.get(fieldType);
             if (typeInfo && typeInfo.kind === 'struct') {
-              // Inline struct - get the ADDRESS of the struct
-              lines.push(`    lea rax, [r13 + ${fieldOffset}]  # Get address of inline struct ${objName}.${expr.field}`);
+              // Struct field - load the pointer (Gen0 stores all structs as pointers at runtime)
+              lines.push(`    mov rax, [r13 + ${fieldOffset}]  # Load struct pointer ${objName}.${expr.field}`);
             } else {
               // Pointer type - load the pointer value
               lines.push(`    mov rax, [r13 + ${fieldOffset}]  # Load pointer/64-bit value`);
@@ -337,8 +340,8 @@ class ExpressionCompiler {
             // Check if this is an inline struct type (not a pointer type)
             const typeInfo = this.symbolTable.types.get(fieldType);
             if (typeInfo && typeInfo.kind === 'struct') {
-              // Inline struct - get the ADDRESS of the struct
-              lines.push(`    lea rax, [rax + ${fieldOffset}]  # Get address of inline struct ${objName}.${expr.field}`);
+              // Struct field - load the pointer (Gen0 stores all structs as pointers at runtime)
+              lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load struct pointer ${objName}.${expr.field}`);
             } else {
               // Pointer type - load the pointer value
               lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
@@ -440,8 +443,8 @@ class ExpressionCompiler {
           // Check if this is an inline struct type (not a pointer type)
           const typeInfo = this.symbolTable.types.get(fieldType);
           if (typeInfo && typeInfo.kind === 'struct') {
-            // Inline struct - get the ADDRESS of the struct
-            lines.push(`    lea rax, [rax + ${fieldOffset}]  # Get address of inline struct .${expr.field}`);
+            // Struct field - load the pointer (Gen0 stores all structs as pointers at runtime)
+            lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load struct pointer .${expr.field}`);
           } else {
             // Pointer type - load the pointer value
             lines.push(`    mov rax, [rax + ${fieldOffset}]  # Load 64-bit field`);
@@ -470,8 +473,8 @@ class ExpressionCompiler {
     }
 
     if (hasNullVar(expr)) {
-      console.error('[DEBUG] Binary expression contains null variable:');
-      console.error('[DEBUG] Full expression:', JSON.stringify(expr, null, 2));
+      DEBUG_EXPR && console.error('[DEBUG] Binary expression contains null variable:');
+      DEBUG_EXPR && console.error('[DEBUG] Full expression:', JSON.stringify(expr, null, 2));
     }
 
     // Arithmetic and bitwise operations: +, -, *, /, %, &, |, ^, <<, >>
@@ -534,15 +537,23 @@ class ExpressionCompiler {
       // Use string comparison for all comparison ops when either operand is a string
       const useStringCompare = (leftIsString || rightIsString);
 
+      // Check if this is an enum comparison (either operand is an enum type)
+      const leftIsEnum = this.isEnumExpression(expr.left);
+      const rightIsEnum = this.isEnumExpression(expr.right);
+      const useEnumCompare = (leftIsEnum || rightIsEnum) && !useStringCompare;
+
       // Debug: Log string comparison detection for variables
       if (expr.left.type === 'variable' || expr.right.type === 'variable') {
         console.error(`[DEBUG-CMP] Comparing: ${JSON.stringify(expr.left)} ${op} ${JSON.stringify(expr.right)}`);
         console.error(`[DEBUG-CMP] leftIsString=${leftIsString}, rightIsString=${rightIsString}, useStringCompare=${useStringCompare}`);
+        console.error(`[DEBUG-CMP] leftIsEnum=${leftIsEnum}, rightIsEnum=${rightIsEnum}, useEnumCompare=${useEnumCompare}`);
         console.error(`[DEBUG-CMP] tempVarTypes:`, Array.from(this.tempVarTypes.entries()));
       }
 
       if (useStringCompare) {
         lines.push(`    # String comparison: ${op}`);
+      } else if (useEnumCompare) {
+        lines.push(`    # Enum comparison: ${op}`);
       } else {
         lines.push(`    # Comparison: ${op}`);
       }
@@ -554,11 +565,11 @@ class ExpressionCompiler {
       // Compile right side
       // Debug: Check if right side is a variable with null name
       if (expr.right.type === 'variable' && (expr.right.name === null || expr.right.name === undefined)) {
-        console.error('[DEBUG] Binary expression with null variable on right side:');
-        console.error('[DEBUG] Full binary expression:', JSON.stringify(expr));
-        console.error('[DEBUG] Operator:', op);
-        console.error('[DEBUG] Left:', JSON.stringify(expr.left));
-        console.error('[DEBUG] Right:', JSON.stringify(expr.right));
+        DEBUG_EXPR && console.error('[DEBUG] Binary expression with null variable on right side:');
+        DEBUG_EXPR && console.error('[DEBUG] Full binary expression:', JSON.stringify(expr));
+        DEBUG_EXPR && console.error('[DEBUG] Operator:', op);
+        DEBUG_EXPR && console.error('[DEBUG] Left:', JSON.stringify(expr.left));
+        DEBUG_EXPR && console.error('[DEBUG] Right:', JSON.stringify(expr.right));
       }
       lines.push(...this.compile(expr.right));
       lines.push(`    mov rbx, rax`);
@@ -614,6 +625,33 @@ class ExpressionCompiler {
               lines.push(`    jge ${trueLabel}`);
               break;
           }
+        }
+      } else if (useEnumCompare) {
+        // Enum comparison - compare tags (ordinals) at offset 0, not pointers
+        // rax and rbx are pointers to tagged unions, dereference to get tags
+        lines.push(`    mov rax, [rax]         # Load left enum tag`);
+        lines.push(`    mov rbx, [rbx]         # Load right enum tag`);
+        lines.push(`    cmp rax, rbx`);
+
+        switch (op) {
+          case '==':
+            lines.push(`    je ${trueLabel}`);
+            break;
+          case '!=':
+            lines.push(`    jne ${trueLabel}`);
+            break;
+          case '<':
+            lines.push(`    jl ${trueLabel}`);
+            break;
+          case '>':
+            lines.push(`    jg ${trueLabel}`);
+            break;
+          case '<=':
+            lines.push(`    jle ${trueLabel}`);
+            break;
+          case '>=':
+            lines.push(`    jge ${trueLabel}`);
+            break;
         }
       } else {
         // Integer/pointer comparison
@@ -750,23 +788,31 @@ class ExpressionCompiler {
     const numRegArgs = Math.min(args.length, 6);
     const numStackArgs = Math.max(0, args.length - 6);
 
-    // Robust stack alignment approach:
-    // 1. Save r15 (callee-saved) and use it to remember original rsp
-    // 2. Do all pushes and argument compilation
-    // 3. Force align stack with 'and rsp, -16' before call
-    // 4. Restore rsp from r15 after call to undo everything cleanly
+    // System V AMD64 ABI calling convention:
+    // - First 6 args go in rdi, rsi, rdx, rcx, r8, r9
+    // - Args 7+ go on stack (pushed in reverse order)
+    // - Stack must be 16-byte aligned BEFORE call instruction
+    // - Callee expects stack args at [rbp+16], [rbp+24], etc.
 
     // Step 1: Save r15 and remember current rsp
     lines.push(`    push r15  # Save callee-saved register`);
     lines.push(`    mov r15, rsp  # Remember rsp for restoration`);
 
-    // Step 2: Save caller-saved registers we'll clobber
-    lines.push(`    push rdi`);
-    lines.push(`    push rsi`);
-    lines.push(`    push rdx`);
+    // Step 2: Force 16-byte alignment using and rsp, -16
+    // This must happen BEFORE any stack arguments are pushed
+    // so that stack args end up at correct offsets for callee
+    lines.push(`    and rsp, -16  # Force 16-byte alignment`);
 
-    // Step 3: Compile and push stack arguments (args 6+) in reverse order
+    // Step 3: Calculate total stack space needed and reserve it
+    // Stack args need numStackArgs * 8 bytes
+    // Also need 8 more bytes if numStackArgs is odd (to maintain 16-byte alignment after pushes)
     if (numStackArgs > 0) {
+      const extraPadding = (numStackArgs % 2 === 1) ? 8 : 0;
+      if (extraPadding > 0) {
+        lines.push(`    sub rsp, 8  # Alignment padding for odd number of stack args`);
+      }
+
+      // Step 4: Compile and push stack arguments (args 6+) in reverse order
       for (let i = args.length - 1; i >= 6; i--) {
         lines.push(`    # Stack argument ${i}`);
         lines.push(...this.compile(args[i]));
@@ -774,7 +820,7 @@ class ExpressionCompiler {
       }
     }
 
-    // Step 4: Compile register arguments (args 0-5)
+    // Step 5: Compile register arguments (args 0-5)
     // We compile each one and save intermediate results on stack
     for (let i = 0; i < numRegArgs; i++) {
       lines.push(`    # Argument ${i}`);
@@ -782,15 +828,10 @@ class ExpressionCompiler {
       lines.push(`    push rax  # Save arg ${i}`);
     }
 
-    // Step 5: Pop register arguments into their target registers (in reverse order)
+    // Step 6: Pop register arguments into their target registers (in reverse order)
     for (let i = numRegArgs - 1; i >= 0; i--) {
       lines.push(`    pop ${argRegs[i]}`);
     }
-
-    // Step 6: Force 16-byte alignment before call
-    // System V ABI: rsp must be 16-byte aligned BEFORE call instruction
-    // After call pushes 8-byte return address, rsp will be 8 off - which is correct for function entry
-    lines.push(`    and rsp, -16  # Force 16-byte alignment before call`);
 
     // Step 7: Call the function
     // For variadic functions, al must contain the number of XMM registers used
@@ -881,7 +922,8 @@ class ExpressionCompiler {
 
   /**
    * Compile enum variant reference (EnumType::Variant)
-   * Enum variants are represented as integer ordinals
+   * All enum variants are represented as pointers to tagged unions
+   * for consistent representation (enables match statements to always dereference)
    */
   compileEnumVariant(expr) {
     const lines = [];
@@ -906,8 +948,18 @@ class ExpressionCompiler {
       throw new Error(`Unknown variant ${variantName} in enum ${enumType}`);
     }
 
-    // Load the ordinal value into rax
-    lines.push(`    mov rax, ${variantInfo.ordinal}`);
+    const ordinal = variantInfo.ordinal;
+
+    // ALWAYS allocate a tagged union for consistent representation
+    // This ensures match statements can always dereference to get the tag
+    const unionSize = 16;  // 8 bytes for tag, 8 bytes for padding
+
+    lines.push(`    # Allocate tagged union for ${enumType}::${variantName}`);
+    lines.push(`    push rdi`);
+    lines.push(`    mov rdi, ${unionSize}`);
+    lines.push(`    call builtin_heap_alloc`);
+    lines.push(`    pop rdi`);
+    lines.push(`    mov qword ptr [rax], ${ordinal}  # Store tag at offset 0`);
 
     return lines;
   }
@@ -1012,14 +1064,9 @@ class ExpressionCompiler {
     const ordinal = variantInfo.ordinal;
     const dataType = variantInfo.dataType;
 
-    // If no data type, just return the ordinal (simple enum)
-    if (!dataType) {
-      lines.push(`    mov rax, ${ordinal}   # Return variant ordinal (no data)`);
-      return lines;
-    }
-
-    // Enum with data - allocate tagged union
-    const unionSize = enumInfo.size;
+    // ALWAYS allocate a tagged union for consistent representation
+    // This ensures match statements can always dereference to get the tag
+    const unionSize = enumInfo.size || 16;  // Minimum 16 bytes (8 tag + 8 data)
 
     lines.push(`    # Allocate tagged union: ${unionSize} bytes`);
     lines.push(`    push rdi`);
@@ -1255,6 +1302,54 @@ class ExpressionCompiler {
       ];
       const funcName = expr.function?.name || expr.callee?.name || '';
       return stringReturningFuncs.includes(funcName);
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if an expression evaluates to an enum type
+   */
+  isEnumExpression(expr) {
+    if (!expr) return false;
+
+    // Enum variant literal (e.g., TokenType::EOF)
+    if (expr.type === 'enum-variant') {
+      return true;
+    }
+
+    // Field access - check if field type is an enum
+    if (expr.type === 'field-access') {
+      if (expr.object.type === 'variable') {
+        const objName = expr.object.name;
+
+        // Check if objName is a local variable with a struct type that has an enum field
+        const varType = this.tempVarTypes.get(objName);
+        if (varType) {
+          const typeInfo = this.symbolTable.types.get(varType);
+          if (typeInfo && typeInfo.kind === 'struct') {
+            const field = typeInfo.fields.find(f => f.name === expr.field);
+            if (field && field.type) {
+              // Check if the field type is an enum
+              const fieldTypeInfo = this.symbolTable.types.get(field.type);
+              if (fieldTypeInfo && fieldTypeInfo.kind === 'enum') {
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Local variable - check if type is an enum
+    if (expr.type === 'variable') {
+      const varType = this.tempVarTypes.get(expr.name);
+      if (varType) {
+        const typeInfo = this.symbolTable.types.get(varType);
+        if (typeInfo && typeInfo.kind === 'enum') {
+          return true;
+        }
+      }
     }
 
     return false;
